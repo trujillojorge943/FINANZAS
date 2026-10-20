@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mis Finanzas — Jorge</title>
+<!-- v12: proyección basada en datos, sueldo automático, plan octubre 2026 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -499,8 +500,8 @@ function Dashboard({cuentas, vencimientos, gastosVariables, ingresosExtra, presu
   const sc = saldo<0?'#A32D2D':saldo<200000?'#854F0B':'#185FA5';
 
   // Calcular total de tarjetas dinámicamente
-  const totalNaranja = naranja.saldoBase + naranja.consumosBase.reduce((a,b)=>a+b.monto,0) + naranja.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
-  const totalBBVA = bbvaTarjeta.saldoBase + bbvaTarjeta.consumosBase.reduce((a,b)=>a+b.monto,0) + bbvaTarjeta.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
+  const totalNaranja = totalTarjeta(naranja,false);
+  const totalBBVA = totalTarjeta(bbvaTarjeta,false);
 
   // Para cada tarjeta: si tiene pago registrado para el resumen actual → mostrar próximo vencimiento
   const getVencTarjeta = (tarjeta, nombre) => {
@@ -518,14 +519,14 @@ function Dashboard({cuentas, vencimientos, gastosVariables, ingresosExtra, presu
 
     // Si el pago actual ya está hecho o el vencimiento pasó → mostrar próximo resumen
     if(tienePagoActual || (ultimoH && new Date(ultimoH.vencimiento+'T12:00:00') < hoy)) {
-      const totalProximo = tarjeta.saldoBase + tarjeta.consumosBase.reduce((a,b)=>a+b.monto,0) + tarjeta.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
+      const totalProximo = totalTarjeta(tarjeta,false);
       if(totalProximo <= 0) return null;
       return {nombre, fecha: tarjeta.vencimiento, monto: totalProximo, tipo:'gasto', pagado: false};
     }
 
     // Sin historial — mostrar resumen actual
     if(tienePagoActual) return null;
-    const totalActual = tarjeta.saldoBase + tarjeta.consumosBase.reduce((a,b)=>a+b.monto,0) + tarjeta.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
+    const totalActual = totalTarjeta(tarjeta,false);
     if(totalActual <= 0) return null;
     return {nombre, fecha: tarjeta.vencimiento, monto: totalActual, tipo:'gasto', pagado: false};
   };
@@ -1123,38 +1124,145 @@ function Ingresos({ingresosExtra, setIngresosExtra, tiposIngreso, cuentas, setCu
   );
 }
 
-function Proyeccion({gastosFijos, vencFijos, naranja, bbva, saldoBase, cuentas, saldoInicialProy, ingresosExtra, sueldosCobrados, vencimientos, gastosSemPagados, gastosVariables}) {
-  const totalNaranjaVencActual = naranja.historial&&naranja.historial.length>0 ? (naranja.historial[naranja.historial.length-1].total||naranja.historial[naranja.historial.length-1].saldoBase) : 0;
-  const totalBBVAVencActual = bbva.historial&&bbva.historial.length>0 ? (bbva.historial[bbva.historial.length-1].total||bbva.historial[bbva.historial.length-1].saldoBase) : 0;
-  const totalNaranjaProximo = naranja.saldoBase + naranja.consumosBase.reduce((a,b)=>a+b.monto,0) + naranja.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
-  const totalBBVAProximo = bbva.saldoBase + bbva.consumosBase.reduce((a,b)=>a+b.monto,0) + bbva.consumosNuevos.filter(c=>!c.esProximo).reduce((a,b)=>a+b.montoCuota,0);
-  const totalNaranja = totalNaranjaVencActual||totalNaranjaProximo;
-  const totalBBVA = totalBBVAVencActual||totalBBVAProximo;
+// ---- PROYECCION (v12: basada en datos) ----
+function addDays(s,n){const d=new Date(s+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().split('T')[0];}
+function addMonths(s,n){const d=new Date(s+'T12:00:00');d.setMonth(d.getMonth()+n);return d.toISOString().split('T')[0];}
+function viernesAntesDe(fecha){const d=new Date(fecha+'T12:00:00');while(d.getDay()!==5)d.setDate(d.getDate()-1);return d.toISOString().split('T')[0];}
+function totalTarjeta(t, incluirTerceros=true){
+  const base=(t.consumosBase||[]).filter(c=>incluirTerceros||!c.tercero).reduce((a,b)=>a+b.monto,0);
+  const nuevos=(t.consumosNuevos||[]).filter(c=>!c.esProximo&&(incluirTerceros||!c.tercero)).reduce((a,b)=>a+b.montoCuota,0);
+  return (t.saldoBase||0)+base+nuevos;
+}
 
-  const saldoInicialProyectado = { current: saldoInicialProy || (cuentas.find(c=>c.nombre==='BBVA')?.saldo || 0) };
-
-  const semanas = Array.from({length:12},(_,i)=>{
-    const l = getLunes(i); return {lunes:l, domingo:getDomingo(l), viernes:getViernes(l)};
+function construirEventos({desde, hasta, sueldoCfg, ingresosExtra, vencFijos, vencimientos, gastosSem, naranja, bbva}){
+  const ev=[]; // {fecha, grupo, desc, monto(+/-), tentativo}
+  const dentro=f=>f>desde&&f<=hasta;
+  // Sueldo semanal automático (cada viernes) con ajustes (adelantos)
+  if(sueldoCfg&&sueldoCfg.activo){
+    const ajustes=sueldoCfg.ajustes||[];
+    let f=addDays(desde,1); while(new Date(f+'T12:00:00').getDay()!==5) f=addDays(f,1);
+    for(;f<=hasta;f=addDays(f,7)){
+      const yaCargado=ingresosExtra.some(x=>x.tipo==='sueldo'&&x.fecha===f);
+      if(yaCargado) continue;
+      const aj=ajustes.find(a=>a.original===f);
+      const fechaReal=aj?aj.nueva:f;
+      if(dentro(fechaReal)) ev.push({fecha:fechaReal,grupo:'ingreso',desc:aj?`Sueldo (adelanto del ${fmtDateShort(f)})`:'Sueldo',monto:sueldoCfg.monto});
+    }
+  }
+  // Ingresos cargados (los shows van al ahorro y no suman al disponible)
+  ingresosExtra.filter(x=>dentro(x.fecha)).forEach(x=>{
+    if(x.tipo==='show') ev.push({fecha:x.fecha,grupo:'show',desc:x.desc+(x.cobrado?' ✓':''),monto:x.monto,tentativo:x.tentativo});
+    else ev.push({fecha:x.fecha,grupo:'ingreso',desc:x.desc,monto:x.monto,tentativo:x.tentativo});
   });
+  // Fijos mensuales: se pagan el viernes anterior o igual al día de vencimiento
+  (vencFijos||[]).forEach(v=>{
+    if(v.activo===false) return;
+    for(let k=0;k<4;k++){
+      const base=new Date(desde+'T12:00:00'); base.setDate(1); base.setMonth(base.getMonth()+k);
+      const dia=String(Math.min(v.dia,28)).padStart(2,'0');
+      const venc=base.toISOString().slice(0,8)+dia;
+      const mes=venc.slice(0,7);
+      if(v.pagado&&v.mesPago===mes) continue;
+      const fp=v.viernesAntes===false?venc:viernesAntesDe(venc);
+      if(dentro(fp)) ev.push({fecha:fp,grupo:'fijo',desc:`${v.nombre} (vence ${fmtDateShort(venc)})`,monto:-v.monto});
+    }
+  });
+  // Pagos únicos / vencimientos cargados
+  (vencimientos||[]).filter(v=>!v.pagado&&dentro(v.fecha)).forEach(v=>{
+    ev.push({fecha:v.fecha,grupo:'unico',desc:v.nombre+(v.tentativo?' (a confirmar)':''),monto:v.tipo==='ingreso'?v.monto:-v.monto,tentativo:v.tentativo});
+  });
+  // Gastos semanales recurrentes (se cuentan el viernes)
+  (gastosSem||[]).forEach(g=>{
+    if(g.activo===false) return;
+    const cada=g.cadaSemanas||1;
+    let f=addDays(desde,1); while(new Date(f+'T12:00:00').getDay()!==5) f=addDays(f,1);
+    for(;f<=hasta;f=addDays(f,7)){
+      if(cada>1&&g.desde){const dif=Math.round((new Date(f+'T12:00:00')-new Date(g.desde+'T12:00:00'))/(7*864e5));if(dif<0||dif%cada!==0)continue;}
+      ev.push({fecha:f,grupo:'semanal',desc:g.desc,monto:-g.monto});
+    }
+  });
+  // Tarjetas: próximo resumen + estimación de los siguientes con cuotas pendientes
+  [[naranja,'Naranja X','naranja'],[bbva,'BBVA','bbva']].forEach(([t,nombre,grupo])=>{
+    if(!t||!t.vencimiento) return;
+    const total=totalTarjeta(t,false);
+    if(dentro(t.vencimiento)&&total>0) ev.push({fecha:t.vencimiento,grupo,desc:`${nombre} vence ${fmtDateShort(t.vencimiento)}`,monto:-total});
+    for(let k=1;k<=3;k++){
+      const f=addMonths(t.vencimiento,k);
+      const cuotas=(t.consumosBase||[]).filter(c=>c.esCuotaFutura&&!c.tercero&&(c.cuotasRestantes||0)>k).reduce((a,b)=>a+(b.montoCuota||b.monto),0)
+        +(t.consumosNuevos||[]).filter(c=>c.esCuotas&&!c.tercero&&(c.cuotas||1)>k).reduce((a,b)=>a+b.montoCuota,0)
+        +(t.fijosMensuales||0);
+      if(dentro(f)&&cuotas>0) ev.push({fecha:f,grupo,desc:`${nombre} ~${fmtDateShort(f)} (estimado: cuotas y fijos)`,monto:-cuotas,tentativo:true});
+    }
+  });
+  return ev;
+}
 
-  const [tooltip, setTooltip] = useState(null); // {tipo, items, x, y}
+function Proyeccion({naranja, bbva, cuentas, saldoInicialProy, setSaldoInicialProy, fechaSaldoProy, setFechaSaldoProy, ingresosExtra, vencimientos, vencFijos, gastosSem, gastosVariables, sueldoCfg, variosSemanal}) {
+  const [tooltip, setTooltip] = useState(null);
+  const [editSaldo, setEditSaldo] = useState(false);
+  const [vals, setVals] = useState({saldo:saldoInicialProy||0, fecha:fechaSaldoProy||today});
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
 
-  const showTooltip = (e, items) => {
-    if(!items || items.length===0) return;
-    const rect = e.target.getBoundingClientRect();
-    setTooltip({items, x: rect.left + rect.width/2, y: rect.top - 8});
+  const desde = fechaSaldoProy || addDays(today,-1);
+  const saldoIni = saldoInicialProy ?? (cuentas.find(c=>c.nombre==='BBVA')?.saldo || 0);
+  const semanas = Array.from({length:12},(_,i)=>{const l=(()=>{const d=new Date(desde+'T12:00:00');d.setDate(d.getDate()-(d.getDay()===0?6:d.getDay()-1)+i*7);return d.toISOString().split('T')[0];})();return {lunes:l,domingo:getDomingo(l)};});
+  const hasta = semanas[semanas.length-1].domingo;
+  const eventos = construirEventos({desde, hasta, sueldoCfg, ingresosExtra, vencFijos, vencimientos, gastosSem, naranja, bbva});
+
+  const filas = [
+    {grupo:'ingreso', label:'💰 Sueldo e ingresos', color:'#3B6D11', bg:'white'},
+    {grupo:'fijo', label:'🏠 Fijos del mes', color:'#854F0B', bg:'#FFF7ED'},
+    {grupo:'unico', label:'📌 Pagos únicos', color:'#854F0B', bg:'#FFF7ED'},
+    {grupo:'semanal', label:'🍽 Semanales', color:'#854F0B', bg:'#FFF7ED'},
+    {grupo:'varios', label:'🛒 Gastos varios', color:'#854F0B', bg:'#FFF7ED'},
+    {grupo:'naranja', label:'💳 Naranja X', color:'#A32D2D', bg:'white'},
+    {grupo:'bbva', label:'💳 BBVA', color:'#A32D2D', bg:'#FAFAF9'},
+  ];
+
+  // Gastos varios: presupuesto semanal, o lo registrado si fue mayor (sin tarjeta)
+  const variosSemana = sem => {
+    const reg = gastosVariables.filter(x=>x.cuenta!=='Tarjeta'&&inRange(x.fecha,sem.lunes,sem.domingo)&&x.fecha>desde).reduce((a,b)=>a+b.monto,0);
+    const dias = Math.max(0, Math.round((new Date(sem.domingo+'T12:00:00')-new Date(Math.max(new Date(sem.lunes+'T12:00:00'), new Date(addDays(desde,1)+'T12:00:00'))))/864e5)+1);
+    const presu = Math.round((variosSemanal||0)*Math.min(7,dias)/7);
+    const m = Math.max(reg, presu);
+    return m>0?[{fecha:sem.domingo,grupo:'varios',desc:reg>presu?'Gastos varios registrados':'Presupuesto gastos varios',monto:-m}]:[];
   };
+  const evSemana = sem => [...eventos.filter(e=>inRange(e.fecha,sem.lunes,sem.domingo)), ...variosSemana(sem)];
 
-  const getVencSemana = (lunes, domingo) => {
-    const items = [];
-
-    ['2026-06-10','2026-07-10','2026-08-10','2026-09-10'].forEach(f=>{if(inRange(f,lunes,domingo))items.push({desc:'Naranja X',monto:f==='2026-06-10'?totalNaranjaVencActual||totalNaranja:totalNaranjaProximo,tipo:'gasto',alert:true});});
-    ['2026-06-03','2026-07-03','2026-08-03'].forEach(f=>{if(inRange(f,lunes,domingo))items.push({desc:'BBVA',monto:f==='2026-06-03'?totalBBVAVencActual||totalBBVA:totalBBVAProximo,tipo:'gasto',alert:true});});
-    return items;
-  };
+  const show = (e, items) => { if(!items.length) return; setTooltip({items}); };
+  let acum = saldoIni;
+  const proyectados = semanas.map(sem=>{ const d=evSemana(sem).filter(e=>e.grupo!=='show').reduce((a,b)=>a+b.monto,0); acum+=d; return {d, saldo:acum}; });
+  const ahorroShows = eventos.filter(e=>e.grupo==='show').reduce((a,b)=>a+b.monto,0);
+  const minimo = Math.min(...proyectados.map(p=>p.saldo));
+  const saldoReal = cuentas.find(c=>c.nombre==='BBVA')?.saldo;
 
   return (
     <div>
+      <div className="card">
+        <div className="card-title">Punto de partida</div>
+        {!editSaldo ? (
+          <div className="row">
+            <span className="row-label">Saldo al {fmtDate(desde)}</span>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:700}}>{fmt(saldoIni)}</span>
+              <button className="btn-icon" onClick={()=>{setVals({saldo:saldoIni,fecha:desde});setEditSaldo(true);}}>✏️</button>
+            </div>
+          </div>
+        ) : (
+          <FormBox>
+            <FormRow label="Saldo disponible"><input type="number" value={vals.saldo} onChange={e=>setVals({...vals,saldo:e.target.value})} /></FormRow>
+            <FormRow label="A la fecha"><input type="date" value={vals.fecha} onChange={e=>setVals({...vals,fecha:e.target.value})} /></FormRow>
+            <div style={{display:'flex',gap:8,marginTop:8}}>
+              <button className="btn-save" onClick={()=>{setSaldoInicialProy(parseFloat(vals.saldo)||0);setFechaSaldoProy(vals.fecha);setEditSaldo(false);}}>Guardar</button>
+              <button className="btn-cancel" onClick={()=>setEditSaldo(false)}>Cancelar</button>
+            </div>
+          </FormBox>
+        )}
+        <div style={{fontSize:12,color:'#78716c',marginTop:8}}>
+          Punto más bajo: <b style={{color:minimo<0?'#A32D2D':'#185FA5'}}>{fmt(minimo)}</b>
+          {ahorroShows>0 && <> · Shows al ahorro: <b style={{color:'#3B6D11'}}>{fmt(ahorroShows)}</b></>}
+        </div>
+      </div>
 
       <div className="proj-wrap">
         <table className="proj-table">
@@ -1162,115 +1270,58 @@ function Proyeccion({gastosFijos, vencFijos, naranja, bbva, saldoBase, cuentas, 
             <tr>
               <td className="sticky-col-header">Concepto</td>
               {semanas.map((sem,i)=>{
-                const v=getVencSemana(sem.lunes,sem.domingo);
-                const alert=v.some(x=>x.alert);
-                const hoy=new Date(); hoy.setHours(0,0,0,0);
-                const esPasada=new Date(sem.domingo+'T12:00:00')<hoy;
-                return <td key={i} style={{textAlign:'center',color:alert?'#A32D2D':esPasada?'#a8a29e':'#57534e',background:esPasada?'#F7F6F3':'transparent'}}>
+                const alert=evSemana(sem).some(e=>e.grupo==='naranja'||e.grupo==='bbva');
+                return <td key={i} style={{textAlign:'center',color:alert?'#A32D2D':'#57534e'}}>
                   {fmtDateShort(sem.lunes)}<br/><span style={{fontSize:10,fontWeight:400,color:'#a8a29e'}}>al {fmtDateShort(sem.domingo)}</span>{alert&&<><br/>🔴</>}
                 </td>;
               })}
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td className="sticky-col" style={{background:'white',color:'#3B6D11',fontSize:11}}>💰 Ingresos</td>
+            {filas.map(f=>(
+              <tr key={f.grupo} style={{background:f.bg}}>
+                <td className="sticky-col" style={{background:f.bg,color:f.color,fontSize:11,fontWeight:600}}>{f.label}</td>
+                {semanas.map((sem,i)=>{
+                  const its=evSemana(sem).filter(e=>e.grupo===f.grupo);
+                  const tot=its.reduce((a,b)=>a+b.monto,0);
+                  const tent=its.some(e=>e.tentativo);
+                  return <td key={i} style={{textAlign:'center',color:tot===0?'#d6d3d1':tot>0?'#3B6D11':f.color,fontWeight:tot!==0?600:400,cursor:its.length?'pointer':'default'}}
+                    onClick={e=>show(e,its.map(x=>({desc:`${fmtDateShort(x.fecha)} · ${x.desc}`,monto:Math.abs(x.monto),signo:x.monto>0?'+':'-',color:x.monto>0?'#3B6D11':'#A32D2D'})))}>
+                    {tot===0?'—':<>{tot>0?'+':'-'}{fmt(Math.abs(tot))}{tent&&<span style={{color:'#a8a29e'}}> ?</span>}</>}
+                  </td>;
+                })}
+              </tr>
+            ))}
+            <tr style={{background:'#F2F8EC'}}>
+              <td className="sticky-col" style={{background:'#F2F8EC',color:'#3B6D11',fontSize:11,fontWeight:600}}>🎸 Shows → ahorro</td>
               {semanas.map((sem,i)=>{
-                const ings=ingresosExtra.filter(x=>inRange(x.fecha,sem.lunes,sem.domingo));
-                const total=ings.reduce((a,b)=>a+b.monto,0);
-                const hoy=new Date(); hoy.setHours(0,0,0,0);
-                const esPasada=new Date(sem.domingo+'T12:00:00')<hoy;
-                return <td key={i} style={{textAlign:'center',color:total>0?'#3B6D11':'#d6d3d1',fontWeight:total>0?600:400,background:esPasada?'#F7F6F3':'transparent',cursor:total>0?'pointer':'default'}}
-                  onClick={total>0?e=>showTooltip(e,ings.map(x=>({desc:(x.cobrado?'✓ ':'')+x.desc,monto:x.monto,color:x.cobrado?'#a8a29e':'#3B6D11',signo:'+'}))):undefined}>
-                  {total>0?<span style={{color:ings.every(x=>x.cobrado)?'#a8a29e':'#3B6D11'}}>+{fmt(total)}<br/><span style={{fontSize:10,color:'#a8a29e'}}>{ings.filter(x=>x.cobrado).length}/{ings.length} cobrado{ings.length>1?'s':''}</span></span>:'—'}
-                </td>;
-              })}
-            </tr>
-            <tr style={{background:'#FFF7ED'}}>
-              <td className="sticky-col" style={{background:'#FFF7ED',color:'#854F0B',fontSize:11}}>➖ Gastos</td>
-              {semanas.map((sem,i)=>{
-                const vars=gastosVariables.filter(x=>x.cuenta!=='Tarjeta'&&inRange(x.fecha,sem.lunes,sem.domingo)); // all, including pagado
-                const total=vars.reduce((a,b)=>a+b.monto,0);
-                const hoy=new Date(); hoy.setHours(0,0,0,0);
-                const esPasada=new Date(sem.domingo+'T12:00:00')<hoy;
-                return <td key={i} style={{textAlign:'center',color:total>0?'#854F0B':'#d6d3d1',fontWeight:total>0?600:400,background:esPasada&&total>0?'#FAEEDA':'#FFF7ED',cursor:total>0?'pointer':'default'}}
-                  onClick={total>0?e=>showTooltip(e,vars.map(x=>({desc:(x.pagado?'✓ ':'')+x.desc,monto:x.monto,color:x.pagado?'#a8a29e':'#854F0B',signo:'-'}))):undefined}>
-                  {total>0?<span style={{color:vars.every(x=>x.pagado)?'#a8a29e':'#854F0B'}}>-{fmt(total)}<br/><span style={{fontSize:10,color:'#a8a29e'}}>{vars.filter(x=>x.pagado).length}/{vars.length} pagado{vars.length>1?'s':''}</span></span>:'—'}
-                </td>;
-              })}
-            </tr>
-
-            <tr>
-              <td className="sticky-col" style={{background:'white',color:'#A32D2D',fontWeight:600,fontSize:11}}>💳 Naranja X</td>
-              {semanas.map((sem,i)=>{
-                const f=['2026-06-10','2026-07-10','2026-08-10','2026-09-10'].find(f=>inRange(f,sem.lunes,sem.domingo));
-                const monto=f==='2026-06-10'?totalNaranjaVencActual||totalNaranja:totalNaranjaProximo;
-                return <td key={i} style={{textAlign:'center',color:f?'#A32D2D':'#d6d3d1',fontWeight:f?600:400}}>
-                  {f?<span>-{fmt(monto)}<br/><span style={{fontSize:10,color:'#854F0B'}}>vence {fmtDateShort(f)}</span></span>:'—'}
-                </td>;
-              })}
-            </tr>
-            <tr style={{background:'#FAFAF9'}}>
-              <td className="sticky-col" style={{background:'#FAFAF9',color:'#A32D2D',fontWeight:600,fontSize:11}}>💳 BBVA</td>
-              {semanas.map((sem,i)=>{
-                const f=['2026-06-03','2026-07-03','2026-08-03'].find(f=>inRange(f,sem.lunes,sem.domingo));
-                const monto=f==='2026-06-03'?totalBBVAVencActual||totalBBVA:totalBBVAProximo;
-                return <td key={i} style={{textAlign:'center',color:f?'#A32D2D':'#d6d3d1',fontWeight:f?600:400,background:'#FAFAF9'}}>
-                  {f?<span>-{fmt(monto)}<br/><span style={{fontSize:10,color:'#854F0B'}}>vence {fmtDateShort(f)}</span></span>:'—'}
-                </td>;
+                const its=evSemana(sem).filter(e=>e.grupo==='show'); const tot=its.reduce((a,b)=>a+b.monto,0);
+                return <td key={i} style={{textAlign:'center',color:tot?'#3B6D11':'#d6d3d1',cursor:its.length?'pointer':'default'}} onClick={e=>show(e,its.map(x=>({desc:`${fmtDateShort(x.fecha)} · ${x.desc}`,monto:x.monto,signo:'+',color:'#3B6D11'})))}>{tot?`+${fmt(tot)}`:'—'}</td>;
               })}
             </tr>
             <tr style={{borderTop:'2px solid #44403c',background:'#F0EEE8'}}>
               <td className="sticky-col" style={{background:'#F0EEE8',fontWeight:700}}>Balance sem.</td>
-              {semanas.map((sem,i)=>{
-                const v=getVencSemana(sem.lunes,sem.domingo);
-                const tv=v.filter(x=>x.tipo==='gasto').reduce((a,b)=>a+b.monto,0);
-                const ie=ingresosExtra.filter(x=>inRange(x.fecha,sem.lunes,sem.domingo)).reduce((a,b)=>a+b.monto,0);
-                const gv=gastosVariables.filter(x=>x.cuenta!=='Tarjeta'&&inRange(x.fecha,sem.lunes,sem.domingo)).reduce((a,b)=>a+b.monto,0);
-                const d=ie-tv-gv;
-                return <td key={i} style={{textAlign:'center',color:d>=0?'#3B6D11':'#A32D2D',fontWeight:700,background:'#F0EEE8'}}>{d>=0?'+':''}{fmt(d)}</td>;
-              })}
+              {proyectados.map((p,i)=><td key={i} style={{textAlign:'center',color:p.d>=0?'#3B6D11':'#A32D2D',fontWeight:700,background:'#F0EEE8'}}>{p.d>=0?'+':''}{fmt(p.d)}</td>)}
             </tr>
             <tr style={{background:'#EAF3DE'}}>
               <td className="sticky-col" style={{background:'#EAF3DE',fontWeight:700,fontSize:12}}>📊 Proyectado</td>
-              {(()=>{
-                const bbvaAcc=cuentas.find(c=>c.nombre==='BBVA'); let r=saldoInicialProyectado.current;
-                return semanas.map((sem,i)=>{
-                  const v=getVencSemana(sem.lunes,sem.domingo);
-                  const tv=v.filter(x=>x.tipo==='gasto').reduce((a,b)=>a+b.monto,0);
-                  const ie=ingresosExtra.filter(x=>inRange(x.fecha,sem.lunes,sem.domingo)).reduce((a,b)=>a+b.monto,0);
-                  const gv=gastosVariables.filter(x=>x.cuenta!=='Tarjeta'&&inRange(x.fecha,sem.lunes,sem.domingo)).reduce((a,b)=>a+b.monto,0);
-                  r+=ie-tv-gv;
-                  const c=r<0?'#A32D2D':r<200000?'#854F0B':'#185FA5';
-                  return <td key={i} style={{textAlign:'center',color:c,fontWeight:700,background:r<0?'#FCEBEB':'#EAF3DE'}}>{fmt(r)}</td>;
-                });
-              })()}
+              {proyectados.map((p,i)=>{const c=p.saldo<0?'#A32D2D':p.saldo<100000?'#854F0B':'#185FA5';return <td key={i} style={{textAlign:'center',color:c,fontWeight:700,background:p.saldo<0?'#FCEBEB':'#EAF3DE'}}>{fmt(p.saldo)}</td>;})}
             </tr>
             <tr style={{background:'#E6F1FB'}}>
               <td className="sticky-col" style={{background:'#E6F1FB',fontWeight:700,fontSize:12}}>✅ Real</td>
-              {(()=>{
-                const bbvaReal=cuentas.find(c=>c.nombre==='BBVA');
-                const saldoReal=bbvaReal?bbvaReal.saldo:0;
-                const hoy=new Date(); hoy.setHours(0,0,0,0);
-                return semanas.map((sem,i)=>{
-                  const esPasadaOActual = new Date(sem.domingo+'T12:00:00') >= hoy;
-                  const c=saldoReal<0?'#A32D2D':saldoReal<200000?'#854F0B':'#185FA5';
-                  // Solo mostrar en la semana actual y pasadas
-                  const domD = new Date(sem.domingo+'T12:00:00');
-                  const lunD = new Date(sem.lunes+'T12:00:00');
-                  if(lunD <= hoy) {
-                    return <td key={i} style={{textAlign:'center',color:c,fontWeight:700,background:saldoReal<0?'#FCEBEB':'#E6F1FB'}}>{fmt(saldoReal)}</td>;
-                  }
-                  return <td key={i} style={{textAlign:'center',color:'#d6d3d1',background:'#E6F1FB'}}>—</td>;
-                });
-              })()}
+              {semanas.map((sem,i)=>{
+                const actual=sem.lunes<=today&&sem.domingo>=today;
+                return <td key={i} style={{textAlign:'center',color:actual?'#185FA5':'#d6d3d1',fontWeight:700,background:'#E6F1FB'}}>{actual&&saldoReal!==undefined?fmt(saldoReal):'—'}</td>;
+              })}
             </tr>
           </tbody>
         </table>
       </div>
+      <div style={{fontSize:11,color:'#a8a29e',padding:'8px 4px'}}>Tocá una celda para ver el detalle. "?" = monto estimado o a confirmar. Los shows van al ahorro y no suman al disponible.</div>
+
     {tooltip && (
       <div onClick={()=>setTooltip(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:1000,background:'rgba(0,0,0,0.3)'}}>
-        <div onClick={e=>e.stopPropagation()} style={{position:'fixed',left:'50%',top:'50%',transform:'translate(-50%,-50%)',background:'white',borderRadius:14,padding:16,minWidth:220,maxWidth:300,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',zIndex:1001}}>
+        <div onClick={e=>e.stopPropagation()} style={{position:'fixed',left:'50%',top:'50%',transform:'translate(-50%,-50%)',background:'white',borderRadius:14,padding:16,minWidth:240,maxWidth:320,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',zIndex:1001}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
             <span style={{fontSize:13,fontWeight:700,color:'#44403c'}}>Detalle</span>
             <button onClick={()=>setTooltip(null)} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:'#78716c',lineHeight:1}}>✕</button>
@@ -1286,6 +1337,63 @@ function Proyeccion({gastosFijos, vencFijos, naranja, bbva, saldoBase, cuentas, 
     )}
     </div>
   );
+}
+
+// ---- PLAN OCTUBRE 2026 ----
+function planOctubre2026(actual){
+  const keepCard=(t,upd)=>({...t,...upd,consumosNuevos:[],pagos:[],historial:t.historial||[]});
+  const cuentas=(actual.cuentas&&actual.cuentas.length?actual.cuentas:CUENTAS_INIT).map(c=>c.nombre==='BBVA'?{...c,saldo:530000}:c);
+  const ingresosPrevios=(actual.ingresosExtra||[]).filter(x=>!String(x.id).startsWith('plan-'));
+  return {
+    saldoInicialProy:530000,
+    fechaSaldoProy:'2026-10-17',
+    cuentas,
+    sueldoCfg:{monto:430000, activo:true, ajustes:[]},
+    variosSemanal:100000,
+    presupuestoVar:400000,
+    vencFijos:[
+      {id:1, nombre:'Alquiler depto + expensas', dia:10, monto:465000, pagado:false, mesPago:null},
+      {id:2, nombre:'Cochera + expensas', dia:10, monto:157000, pagado:false, mesPago:null},
+      {id:3, nombre:'Patente', dia:10, monto:10000, pagado:false, mesPago:null},
+    ],
+    gastosSem:[
+      {id:1, desc:'Comida mediodía', monto:40000},
+      {id:2, desc:'Corte de pelo', monto:25000, cadaSemanas:2, desde:'2026-10-23'},
+    ],
+    vencimientos:[
+      ...(actual.vencimientos||[]).filter(v=>!String(v.id).startsWith('plan-')&&!v.pagado&&v.fecha>'2026-10-17'&&!/naranja|bbva/i.test(v.nombre)),
+      {id:'plan-renov', nombre:'Renovación alquiler (depósito 190 + comisión 555 + firmas 105)', fecha:'2026-10-23', monto:850000, tipo:'gasto', pagado:false, tentativo:true},
+    ],
+    ingresosExtra:[
+      ...ingresosPrevios,
+      {id:'plan-show1', desc:'Show', tipo:'show', monto:40000, fecha:'2026-10-25', cobrado:false},
+      {id:'plan-show2', desc:'Show (me deben)', tipo:'show', monto:50000, fecha:'2026-10-23', cobrado:false, tentativo:true},
+    ],
+    bbva: keepCard(actual.bbva||BBVA_INIT,{
+      cierre:'2026-10-22', vencimiento:'2026-11-04', saldoBase:0, fijosMensuales:6000,
+      consumosBase:[
+        {desc:'TuEntrada.com (c.6/6)', monto:11500, fecha:'2026-10-01', esCuotaFutura:true, cuotasRestantes:1, montoCuota:11500},
+        {desc:'Farmacia Catedral III (c.2/3)', monto:24002, fecha:'2026-10-01', esCuotaFutura:true, cuotasRestantes:2, montoCuota:24002},
+        {desc:'Mercado Libre (c.2/3)', monto:25000, fecha:'2026-10-01', esCuotaFutura:true, cuotasRestantes:2, montoCuota:25000},
+        {desc:'Ticketek (c.1/3)', monto:52733, fecha:'2026-10-09', esCuotaFutura:true, cuotasRestantes:3, montoCuota:52733},
+        {desc:'Despegar', monto:1520, fecha:'2026-09-25'},
+        {desc:'PedidosYa Quincho Milan + propina', monto:11270, fecha:'2026-10-10'},
+        {desc:'Spotify + Google One (USD, estimado)', monto:6000, fecha:'2026-10-13'},
+        {desc:'Impuestos (estimado)', monto:4000, fecha:'2026-10-22'},
+      ],
+    }),
+    naranja: keepCard(actual.naranja||NARANJA_INIT,{
+      cierre:'2026-10-27', vencimiento:'2026-11-10', saldoBase:0, fijosMensuales:19000,
+      consumosBase:[
+        {desc:'Volkswagen (lo paga el comprador)', monto:637551, fecha:'2026-10-06', tercero:true},
+        {desc:'Marathon Plan Z (c.1/3)', monto:23000, fecha:'2026-10-04', esCuotaFutura:true, cuotasRestantes:3, montoCuota:23000},
+        {desc:'Oster (c.5/9)', monto:8889, fecha:'2026-10-01', esCuotaFutura:true, cuotasRestantes:5, montoCuota:8889},
+        {desc:'PedidosYa (27/9 al 4/10)', monto:26060, fecha:'2026-10-04'},
+        {desc:'Plan Turbo', monto:11240, fecha:'2026-10-27'},
+        {desc:'IVA + sellos (estimado)', monto:8000, fecha:'2026-10-27'},
+      ],
+    }),
+  };
 }
 
 function Cuentas({cuentas, setCuentas}) {
@@ -1550,7 +1658,8 @@ function Reporte({gastosVariables, ingresosExtra, naranja, bbva, cuentas}) {
   );
 }
 
-function Configuracion({categorias, setCategorias, tiposIngreso, setTiposIngreso}) {
+function Configuracion({categorias, setCategorias, tiposIngreso, setTiposIngreso, sueldoCfg, setSueldoCfg, variosSemanal, setVariosSemanal, vencFijos, setVencFijos, gastosSem, setGastosSem, onCargarPlan}) {
+  const [nuevoAj, setNuevoAj] = useState({original:'', nueva:''});
   const [newCat, setNewCat] = useState('');
   const [editCatId, setEditCatId] = useState(null);
   const [editCatVal, setEditCatVal] = useState('');
@@ -1560,6 +1669,60 @@ function Configuracion({categorias, setCategorias, tiposIngreso, setTiposIngreso
 
   return (
     <div>
+      <div className="card">
+        <div className="card-title">Plan de octubre 2026</div>
+        <div style={{fontSize:12,color:'#78716c',marginBottom:10}}>Carga el saldo al 17/10, sueldo semanal, alquiler, cochera, patente, comida, corte, gastos varios, la renovación (a confirmar), los shows y los próximos resúmenes de BBVA y Naranja. No borra tu historial ni los gastos registrados.</div>
+        <button className="btn-save" style={{width:'100%'}} onClick={onCargarPlan}>Cargar plan octubre</button>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Sueldo semanal</div>
+        <div className="row"><span className="row-label">Monto (cada viernes)</span><input type="number" style={{width:120,fontSize:13,padding:'6px 8px',border:'1px solid #e7e5e4',borderRadius:6,textAlign:'right'}} value={sueldoCfg.monto} onChange={e=>setSueldoCfg({...sueldoCfg,monto:parseFloat(e.target.value)||0})} /></div>
+        <div className="row"><span className="row-label">Proyectar automáticamente</span><Tilde checked={sueldoCfg.activo} onClick={()=>setSueldoCfg({...sueldoCfg,activo:!sueldoCfg.activo})} /></div>
+        <div style={{fontSize:12,fontWeight:600,color:'#57534e',margin:'12px 0 6px'}}>Adelantos / cambios de fecha</div>
+        {(sueldoCfg.ajustes||[]).map((a,i)=>(
+          <div key={i} className="row"><span className="row-label">Sueldo del {fmtDate(a.original)} → {fmtDate(a.nueva)}</span><button className="btn-icon" onClick={()=>setSueldoCfg({...sueldoCfg,ajustes:sueldoCfg.ajustes.filter((_,j)=>j!==i)})}>🗑</button></div>
+        ))}
+        <FormBox>
+          <FormRow label="Viernes original"><input type="date" value={nuevoAj.original} onChange={e=>setNuevoAj({...nuevoAj,original:e.target.value})} /></FormRow>
+          <FormRow label="Se cobra el"><input type="date" value={nuevoAj.nueva} onChange={e=>setNuevoAj({...nuevoAj,nueva:e.target.value})} /></FormRow>
+          <button className="btn-save" onClick={()=>{if(!nuevoAj.original||!nuevoAj.nueva)return;setSueldoCfg({...sueldoCfg,ajustes:[...(sueldoCfg.ajustes||[]).filter(a=>a.original!==nuevoAj.original),nuevoAj]});setNuevoAj({original:'',nueva:''});}}>+ Agregar adelanto</button>
+        </FormBox>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Gastos varios</div>
+        <div className="row"><span className="row-label">Presupuesto semanal</span><input type="number" style={{width:120,fontSize:13,padding:'6px 8px',border:'1px solid #e7e5e4',borderRadius:6,textAlign:'right'}} value={variosSemanal} onChange={e=>setVariosSemanal(parseFloat(e.target.value)||0)} /></div>
+        <div style={{fontSize:11,color:'#a8a29e',marginTop:4}}>PedidosYa, higiene, limpieza, salidas, ropa. En la proyección se usa este monto, o lo registrado si fue mayor.</div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Fijos mensuales</div>
+        {(vencFijos||[]).map(v=>(
+          <div key={v.id} className="row">
+            <span className="row-label">{v.nombre} <span style={{fontSize:11,color:'#a8a29e'}}>vence el {v.dia}</span></span>
+            <div style={{display:'flex',gap:4,alignItems:'center'}}>
+              <input type="number" style={{width:120,fontSize:13,padding:'6px 8px',border:'1px solid #e7e5e4',borderRadius:6,textAlign:'right'}} value={v.monto} onChange={e=>setVencFijos(vencFijos.map(x=>x.id===v.id?{...x,monto:parseFloat(e.target.value)||0}:x))} />
+              <button className="btn-icon" onClick={()=>setVencFijos(vencFijos.filter(x=>x.id!==v.id))}>🗑</button>
+            </div>
+          </div>
+        ))}
+        <div style={{fontSize:11,color:'#a8a29e',marginTop:4}}>Se proyectan el viernes anterior al vencimiento.</div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Semanales recurrentes</div>
+        {(gastosSem||[]).map(g=>(
+          <div key={g.id} className="row">
+            <span className="row-label">{g.desc} <span style={{fontSize:11,color:'#a8a29e'}}>{(g.cadaSemanas||1)>1?`cada ${g.cadaSemanas} semanas`:'cada semana'}</span></span>
+            <div style={{display:'flex',gap:4,alignItems:'center'}}>
+              <input type="number" style={{width:120,fontSize:13,padding:'6px 8px',border:'1px solid #e7e5e4',borderRadius:6,textAlign:'right'}} value={g.monto} onChange={e=>setGastosSem(gastosSem.map(x=>x.id===g.id?{...x,monto:parseFloat(e.target.value)||0}:x))} />
+              <button className="btn-icon" onClick={()=>setGastosSem(gastosSem.filter(x=>x.id!==g.id))}>🗑</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <div className="card">
         <div className="card-title">Categorías de gastos</div>
         {categorias.map((cat, i)=>(
@@ -1878,6 +2041,9 @@ function App() {
   const [tiposIngreso, setTiposIngreso] = useState(['Sueldo','Show','Trabajo particular']);
   const [cuentas, setCuentas] = useState(CUENTAS_INIT);
   const [saldoInicialProy, setSaldoInicialProy] = useState(null);
+  const [fechaSaldoProy, setFechaSaldoProy] = useState(null);
+  const [sueldoCfg, setSueldoCfg] = useState({monto:430000, activo:true, ajustes:[]});
+  const [variosSemanal, setVariosSemanal] = useState(100000);
   const [naranja, setNaranja] = useState(NARANJA_INIT);
   const [bbva, setBbva] = useState(BBVA_INIT);
   const importRef = useRef();
@@ -1902,6 +2068,9 @@ function App() {
       if(d.bbva) setBbva(d.bbva);
       if(d.cuentas) setCuentas(d.cuentas);
       if(d.tiposIngreso) setTiposIngreso(d.tiposIngreso);
+      if(d.fechaSaldoProy) setFechaSaldoProy(d.fechaSaldoProy);
+      if(d.sueldoCfg) setSueldoCfg(d.sueldoCfg);
+      if(d.variosSemanal!==undefined) setVariosSemanal(d.variosSemanal);
       if(d.saldoInicialProy!==undefined && d.saldoInicialProy!==null) setSaldoInicialProy(d.saldoInicialProy);
       else if(d.cuentas) { const b=d.cuentas.find(c=>c.nombre==='BBVA'); if(b) setSaldoInicialProy(b.saldo); }
     }
@@ -1911,11 +2080,11 @@ function App() {
   // Save to localStorage on every change
   useEffect(()=>{
     if(isFirstRender.current) return;
-    const data = {saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,tiposIngreso,naranja,bbva,cuentas,saldoInicialProy};
+    const data = {saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,tiposIngreso,naranja,bbva,cuentas,saldoInicialProy,fechaSaldoProy,sueldoCfg,variosSemanal};
     saveToStorage(data);
-  },[saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,tiposIngreso,naranja,bbva,cuentas,saldoInicialProy]);
+  },[saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,tiposIngreso,naranja,bbva,cuentas,saldoInicialProy,fechaSaldoProy,sueldoCfg,variosSemanal]);
 
-  const getAllData = () => ({saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,naranja,bbva});
+  const getAllData = () => ({saldoBase,gastosFijos,gastosSem,gastosSemPagados,vencimientos,vencFijos,gastosVariables,ingresosExtra,sueldosCobrados,presupuestoVar,categorias,tiposIngreso,naranja,bbva,cuentas,saldoInicialProy,fechaSaldoProy,sueldoCfg,variosSemanal});
 
   const handleImport = (data) => {
     if(data.saldoBase!==undefined) setSaldoBase(data.saldoBase);
@@ -1933,7 +2102,19 @@ function App() {
     if(data.bbva) setBbva(data.bbva);
     if(data.cuentas) setCuentas(data.cuentas);
     if(data.tiposIngreso) setTiposIngreso(data.tiposIngreso);
+    if(data.saldoInicialProy!==undefined&&data.saldoInicialProy!==null) setSaldoInicialProy(data.saldoInicialProy);
+    if(data.fechaSaldoProy) setFechaSaldoProy(data.fechaSaldoProy);
+    if(data.sueldoCfg) setSueldoCfg(data.sueldoCfg);
+    if(data.variosSemanal!==undefined) setVariosSemanal(data.variosSemanal);
+    if(data.silencioso) return;
     alert('✓ Datos importados correctamente');
+  };
+
+  const cargarPlan = () => {
+    if(!confirm('Esto actualiza saldo, sueldo, fijos, semanales, pagos únicos y los próximos resúmenes de BBVA y Naranja con el plan de octubre 2026. El historial, los gastos registrados y los ingresos anteriores se mantienen. ¿Continuar?')) return;
+    const plan = planOctubre2026({cuentas,vencimientos,ingresosExtra,bbva,naranja});
+    handleImport({...plan, silencioso:true});
+    alert('✓ Plan cargado. Revisá la pestaña Proy.');
   };
 
   const saldo = saldoBase
@@ -1960,11 +2141,11 @@ function App() {
           {tab==='dashboard' && t.id==='dashboard' && <Dashboard cuentas={cuentas} vencimientos={vencimientos} gastosVariables={gastosVariables} ingresosExtra={ingresosExtra} presupuestoVar={presupuestoVar} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} gastosSemPagados={gastosSemPagados} sueldosCobrados={sueldosCobrados} naranja={naranja} bbvaTarjeta={bbva} />}
           {tab==='variables' && t.id==='variables' && <Variables gastosVariables={gastosVariables} setGastosVariables={setGastosVariables} categorias={categorias} setCategorias={setCategorias} gastosSem={gastosSem} cuentas={cuentas} setCuentas={setCuentas} naranja={naranja} setNaranja={setNaranja} bbva={bbva} setBbva={setBbva} />}
           {tab==='ingresos' && t.id==='ingresos' && <Ingresos ingresosExtra={ingresosExtra} setIngresosExtra={setIngresosExtra} tiposIngreso={tiposIngreso} cuentas={cuentas} setCuentas={setCuentas} />}
-          {tab==='proyeccion' && t.id==='proyeccion' && <Proyeccion gastosFijos={gastosFijos} vencFijos={vencFijos} naranja={naranja} bbva={bbva} saldoBase={saldoBase} cuentas={cuentas} saldoInicialProy={saldoInicialProy} ingresosExtra={ingresosExtra} sueldosCobrados={sueldosCobrados} vencimientos={vencimientos} gastosSemPagados={gastosSemPagados} gastosVariables={gastosVariables} />}
+          {tab==='proyeccion' && t.id==='proyeccion' && <Proyeccion naranja={naranja} bbva={bbva} cuentas={cuentas} saldoInicialProy={saldoInicialProy} setSaldoInicialProy={setSaldoInicialProy} fechaSaldoProy={fechaSaldoProy} setFechaSaldoProy={setFechaSaldoProy} ingresosExtra={ingresosExtra} vencimientos={vencimientos} vencFijos={vencFijos} gastosSem={gastosSem} gastosVariables={gastosVariables} sueldoCfg={sueldoCfg} variosSemanal={variosSemanal} />}
           {tab==='cuentas' && t.id==='cuentas' && <Cuentas cuentas={cuentas} setCuentas={setCuentas} />}
           {tab==='tarjetas' && t.id==='tarjetas' && <Tarjetas naranja={naranja} setNaranja={setNaranja} bbva={bbva} setBbva={setBbva} categorias={categorias} gastosVariables={gastosVariables} setGastosVariables={setGastosVariables} cuentas={cuentas} setCuentas={setCuentas} />}
           {tab==='reporte' && t.id==='reporte' && <Reporte gastosVariables={gastosVariables} ingresosExtra={ingresosExtra} naranja={naranja} bbva={bbva} cuentas={cuentas} />}
-          {tab==='config' && t.id==='config' && <Configuracion categorias={categorias} setCategorias={setCategorias} tiposIngreso={tiposIngreso} setTiposIngreso={setTiposIngreso} />}
+          {tab==='config' && t.id==='config' && <Configuracion categorias={categorias} setCategorias={setCategorias} tiposIngreso={tiposIngreso} setTiposIngreso={setTiposIngreso} sueldoCfg={sueldoCfg} setSueldoCfg={setSueldoCfg} variosSemanal={variosSemanal} setVariosSemanal={setVariosSemanal} vencFijos={vencFijos} setVencFijos={setVencFijos} gastosSem={gastosSem} setGastosSem={setGastosSem} onCargarPlan={cargarPlan} />}
         </div>
       ))}
 
