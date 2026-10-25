@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Finanzas">
 <title>Mis Finanzas — Jorge</title>
-<!-- v14: egresos, préstamos, sincronización con Google Drive, app instalable -->
+<!-- v15: resumen en PDF, sueldo con confirmación y adelantos, tema claro/oscuro -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -27,15 +27,13 @@
   --r-lg:18px; --r:12px; --r-sm:8px;
   color-scheme:light;
 }
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
+  :root[data-theme="dark"]{
     --bg:#0F1724; --surface:#18233A; --surface2:#1F2C46; --line:#2C3A57;
     --ink:#E9EEF6; --ink2:#AAB5C8; --ink3:#77839A;
     --pos:#43C59A; --pos-bg:#123A30; --neg:#F07A70; --neg-bg:#3D1C1C; --warn:#F0B94D; --warn-bg:#3A2E12;
     --bbva:#5BA4E6; --nx:#FF8A4C; --mp:#4CC3F2; --ahorro:#A08BEA;
     color-scheme:dark;
   }
-}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 :root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -78,7 +76,7 @@ button{cursor:pointer}
 .acc .n{font-size:11px;opacity:.75;display:flex;align-items:center}
 .acc .v{font-weight:700;font-size:14px}
 .hero .sub{display:flex;justify-content:space-between;font-size:12px;margin-top:12px;opacity:.85;gap:8px;flex-wrap:wrap}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .hero{background:#22325A;color:var(--ink)}}
+:root[data-theme="dark"] .hero{background:#22325A;color:var(--ink)}
 /* bars */
 .bar{height:12px;background:var(--surface2);border-radius:999px;overflow:hidden;margin:6px 0 4px}
 .bar span{display:block;height:100%;border-radius:999px;transition:width .4s}
@@ -160,12 +158,12 @@ const STORAGE_KEY = 'jorge-finanzas-v13';
 const OLD_KEY = 'jorge-finanzas-v11';
 const FERIADOS_INIT = ['2026-11-23','2026-12-07','2026-12-08','2026-12-25','2027-01-01','2027-02-08','2027-02-09','2027-03-24','2027-03-25','2027-03-26','2027-04-02','2027-05-25','2027-06-21','2027-07-09','2027-08-16','2027-10-11','2027-12-08'];
 const CATS_VARIOS = ['PedidosYa','Higiene','Limpieza','Salidas','Ropa','Supermercado','Farmacia','Regalos','Otros varios'];
-const CATS_OTRAS = ['Comida mediodía','Corte de pelo','Vivienda','Patente','Auto','Salud','Trabajo','Imprevisto','Otro'];
+const CATS_OTRAS = ['Comida mediodía','Corte de pelo','Vivienda','Patente','Suscripciones','Auto','Salud','Trabajo','Imprevisto','Otro'];
 
 function datosIniciales(){
   const ini='2026-10-20';
   return {
-    version:13, fechaInicio:ini, metaAhorro:1200000, tope_cuotas_pct:10,
+    version:13, fechaInicio:ini, metaAhorro:1200000, tope_cuotas_pct:10, tema:'claro',
     feriados:FERIADOS_INIT, catsVarios:CATS_VARIOS, catsOtras:CATS_OTRAS,
     cuentas:[
       {id:'bbva', nombre:'BBVA', color:'var(--bbva)', saldoInicial:177427},
@@ -271,7 +269,12 @@ function ocurrencias(db,a,b){
       if(prog<db.fechaInicio && rec.frec==='mensual' && fecha<=db.fechaInicio) return;
       if(fecha<=db.fechaInicio && !o.estado) return;
       const monto=o.monto??estimado(db,rec,prog);
-      out.push({key,rec,prog,fecha,monto,estado:o.estado||'pendiente',ajustada:!!o.fecha});
+      let estado=o.estado||'pendiente', cobrado=0;
+      if(rec.tipo==='ingreso'&&estado!=='omitido'){
+        cobrado=db.movs.filter(m=>m.tipo==='ingreso'&&m.recKey===key).reduce((a,b)=>a+b.monto,0);
+        estado=(o.cerrado||(o.estado==='hecho'&&o.movId&&db.movs.some(m=>m.id===o.movId))||cobrado>=monto-0.5)?'hecho':'pendiente';
+      }
+      out.push({key,rec,prog,fecha,monto,estado,ajustada:!!o.fecha,cobrado,resto:Math.max(0,monto-cobrado)});
     });
   });
   return out.filter(x=>x.fecha>=a&&x.fecha<=b);
@@ -289,14 +292,14 @@ function itemsTarjeta(db,t,hasta){
   const idx=f=>{ const i=rs.findIndex(r=>r.cierre>=f); return i<0?rs.length-1:i; };
   const items=[];
   db.consumos.filter(c=>c.tarjeta===t.id).forEach(c=>{
-    const rest=(c.cuotas||1)-(c.cuotasPagadas||0); const i0=idx(c.fecha);
+    const rest=(c.cuotas||1)-(c.cuotasPagadas||0); let i0=c.resumenInicial?rs.findIndex(r=>r.id===c.resumenInicial):-1; if(i0<0) i0=idx(c.fecha);
     for(let k=0;k<rest;k++){ const r=rs[i0+k]; if(!r) break;
       items.push({previo:!!c.previo, fechaCompra:c.fecha, desc:c.desc+((c.cuotas||1)>1?` (${(c.cuotasPagadas||0)+k+1}/${c.cuotas})`:''), monto:c.montoCuota, tercero:!!c.tercero, resumenId:r.id, consumoId:c.id, cat:c.cat, cuotaN:k, real:true});
     }
   });
   // recurrentes con tarjeta todavía no registrados
   ocurrencias(db,db.fechaInicio,hasta).filter(o=>o.rec.medio===t.id&&o.estado==='pendiente').forEach(o=>{
-    const r=rs[idx(o.fecha)]; items.push({fechaCompra:o.fecha, desc:o.rec.nombre, monto:o.monto, resumenId:r.id, cat:o.rec.cat||'Otro', proyectado:true});
+    const r=rs[idx(o.fecha)]; items.push({fechaCompra:o.fecha, desc:o.rec.nombre, monto:o.monto, resumenId:r.id, cat:o.rec.cat||'Otro', proyectado:true, key:o.key});
   });
   // ajustes de resúmenes confirmados y saldos impagos
   rs.forEach((r,i)=>{
@@ -362,7 +365,7 @@ function eventosFuturos(db,hasta){
   // recurrentes (ingresos y gastos)
   ocurrencias(db,db.fechaInicio,hasta).filter(o=>o.estado==='pendiente').forEach(o=>{
     const f=at(o.fecha); if(f>hasta) return;
-    if(o.rec.tipo==='ingreso') ev.push({fecha:f, tipo:'ingreso', cuenta:o.rec.medio, monto:o.monto, desc:o.rec.nombre+(o.ajustada?` (cobro movido del ${fC(o.prog)})`:''), vencido:o.fecha<hoy, key:o.key});
+    if(o.rec.tipo==='ingreso') ev.push({fecha:f, tipo:'ingreso', cuenta:o.rec.medio, monto:o.resto, desc:o.rec.nombre+(o.cobrado?` (lo que falta del ${fC(o.prog)})`:o.ajustada?` (cobro movido del ${fC(o.prog)})`:` del ${fC(o.prog)}`), vencido:o.fecha<hoy, key:o.key, tentativo:o.fecha<hoy});
     else if(esTarjeta(db,o.rec.medio)) ev.push({fecha:f, tipo:'compraTarjeta', tarjeta:o.rec.medio, monto:o.monto, desc:o.rec.nombre+' ('+nombreMedio(db,o.rec.medio)+')', key:o.key});
     else ev.push({fecha:f, tipo:'gasto', grupo:o.rec.grupo==='vivienda'?'vivienda':'fijo', cuenta:o.rec.medio, monto:o.monto, desc:o.rec.nombre+(o.rec.frec==='mensual'?` (vence ${fC(o.prog)})`:''), vencido:o.fecha<hoy, key:o.key, estimado:o.rec.estim==='ultimo'});
   });
@@ -469,19 +472,8 @@ function saldoCuentaAntes(db,cuenta,fecha,excluirResumen){
 }
 
 // Tareas automáticas al abrir: registrar sueldos y cargos recurrentes con tarjeta que ya ocurrieron
-function autoRegistrar(db){
-  const hoy=hoyStr(); let cambio=false; const ocurr={...db.ocurr}; const movs=[...db.movs]; const consumos=[...db.consumos];
-  ocurrencias(db,db.fechaInicio,hoy).filter(o=>o.estado==='pendiente'&&o.fecha<=hoy&&o.fecha>db.fechaInicio).forEach(o=>{
-    if(o.rec.tipo==='ingreso'&&o.rec.auto){
-      const id=uid(); movs.push({id,fecha:o.fecha,tipo:'ingreso',subtipo:'Sueldo',monto:o.monto,cuenta:o.rec.medio,desc:o.rec.nombre,recKey:o.key,auto:true});
-      ocurr[o.key]={...(ocurr[o.key]||{}),estado:'hecho',monto:o.monto,fecha:o.fecha,movId:id}; cambio=true;
-    } else if(o.rec.tipo==='gasto'&&esTarjeta(db,o.rec.medio)){
-      const id=uid(); consumos.push({id,tarjeta:o.rec.medio,fecha:o.fecha,desc:o.rec.nombre,cat:o.rec.cat||'Otro',montoCuota:o.monto,cuotas:1,cuotasPagadas:0,recKey:o.key,auto:true});
-      ocurr[o.key]={...(ocurr[o.key]||{}),estado:'hecho',monto:o.monto,fecha:o.fecha,consumoId:id}; cambio=true;
-    }
-  });
-  return cambio?{...db,ocurr,movs,consumos}:db;
-}
+// Nada se registra automáticamente: sueldos y cargos con tarjeta se confirman a mano (o con el PDF del resumen)
+function autoRegistrar(db){ return db; }
 
 // ================= UI BASE =================
 function Sheet({title,onClose,children}){
@@ -490,7 +482,7 @@ function Sheet({title,onClose,children}){
     <h3>{title}<button className="btn ghost sm" onClick={onClose} aria-label="Cerrar">✕</button></h3>{children}</div></div>;
 }
 const F = ({label,children}) => <div className="field"><label>{label}</label>{children}</div>;
-const num = v => { const n=parseFloat(String(v).replace(/\./g,'').replace(',','.')); return isNaN(n)?0:n; };
+const num = v => { if(typeof v==='number') return v; const n=parseFloat(String(v).replace(/\./g,'').replace(',','.')); return isNaN(n)?0:n; };
 function MontoInput({value,onChange,autoFocus}){ return <input inputMode="decimal" value={value} autoFocus={autoFocus} onChange={e=>onChange(e.target.value)} placeholder="0" />; }
 function SelMedio({db,value,onChange,soloCuentas}){
   return <select value={value} onChange={e=>onChange(e.target.value)}>
@@ -591,26 +583,58 @@ function Prestamos({db,abrir,todos}){
   </div>;
 }
 
-const TIPOS_ING=['Sueldo','Evento musical','Bono trabajo','Ingreso extra'];
+const TIPOS_ING=['Sueldo','Bono laboral','Aguinaldo','Evento musical','Ingreso extra'];
+const sueldosAbiertos = (db,extra) => ocurrencias(db,db.fechaInicio,addD(hoyStr(),42)).filter(o=>o.rec.tipo==='ingreso'&&(o.estado==='pendiente'||o.key===extra));
+function quitarCierre(d,key){ if(!key||!d.ocurr[key]) return d; const x={...d.ocurr[key]}; delete x.estado; delete x.movId; delete x.cerrado; return {...d,ocurr:{...d.ocurr,[key]:x}}; }
+
 function FormIngreso({db,save,onClose,inicial}){
   const ed=inicial||{};
-  const [v,setV]=useState({monto:ed.monto??'',subtipo:ed.subtipo||'Evento musical',desc:ed.desc||'',cuenta:ed.cuenta||'bbva',ahorro:!!ed.ahorro,fecha:ed.fecha||hoyStr()});
+  const abiertos=sueldosAbiertos(db,ed.recKey);
+  const defKey=ed.recKey||(abiertos.find(o=>o.fecha>=addD(hoyStr(),-6))||abiertos[0]||{}).key||'';
+  const [v,setV]=useState({monto:ed.monto??'',subtipo:ed.subtipo||'Evento musical',desc:ed.desc||'',cuenta:ed.cuenta||'bbva',ahorro:!!ed.ahorro,fecha:ed.fecha||hoyStr(),recKey:defKey,cerrar:false});
+  const oc=v.subtipo==='Sueldo'?abiertos.find(o=>o.key===v.recKey):null;
+  const restoOc=oc?oc.resto+(ed.id&&ed.recKey===oc.key?(ed.monto||0):0):0;
   const ok=()=>{ const m=num(v.monto); if(m<=0) return;
-    const mov={id:ed.id||uid(),fecha:v.fecha,tipo:'ingreso',subtipo:v.subtipo,monto:m,cuenta:v.cuenta,desc:v.desc||v.subtipo,ahorro:v.ahorro,recKey:ed.recKey};
+    if(v.subtipo==='Sueldo'&&abiertos.length&&!v.recKey) return alert('Elegí a qué viernes corresponde el sueldo.');
+    const recKey=v.subtipo==='Sueldo'?(v.recKey||undefined):undefined;
+    const mov={id:ed.id||uid(),fecha:v.fecha,tipo:'ingreso',subtipo:v.subtipo,monto:m,cuenta:v.cuenta,desc:v.desc||v.subtipo,ahorro:v.ahorro,recKey};
     let d={...db,movs:[...db.movs.filter(x=>x.id!==ed.id),mov]};
-    if(ed.recKey) d.ocurr={...d.ocurr,[ed.recKey]:{...(d.ocurr[ed.recKey]||{}),estado:'hecho',monto:m,fecha:v.fecha,movId:mov.id}};
+    if(ed.recKey&&ed.recKey!==recKey) d=quitarCierre(d,ed.recKey);
+    if(recKey&&v.cerrar) d.ocurr={...d.ocurr,[recKey]:{...(d.ocurr[recKey]||{}),cerrado:true}};
     if(ed.esperado) d.esperados=d.esperados.map(e=>e.id===ed.esperado?{...e,hecho:true,movId:mov.id}:e);
     save(d); onClose(); };
   return <Sheet title={ed.id?'Editar ingreso':'Registrar ingreso'} onClose={onClose}><div className="form">
+    <F label="Tipo"><div className="seg">{TIPOS_ING.map(t=><button key={t} className={v.subtipo===t?'on':''} onClick={()=>setV({...v,subtipo:t,cuenta:t==='Sueldo'?(oc?.rec.medio||'bbva'):v.cuenta})}>{t}</button>)}</div></F>
+    {v.subtipo==='Sueldo'&&<F label="¿De qué viernes es este sueldo?"><select value={v.recKey} onChange={e=>setV({...v,recKey:e.target.value})}>
+      {!abiertos.length&&<option value="">Sin sueldos pendientes</option>}
+      {abiertos.map(o=><option key={o.key} value={o.key}>Viernes {fC(o.prog)}{o.cobrado?` (falta ${$(o.resto)})`:` (${$(o.monto)})`}</option>)}</select></F>}
     <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
-    <F label="Tipo"><div className="seg">{TIPOS_ING.map(t=><button key={t} className={v.subtipo===t?'on':''} onClick={()=>setV({...v,subtipo:t})}>{t}</button>)}</div></F>
+    {oc&&num(v.monto)>0&&num(v.monto)<restoOc-0.5&&<div className="alert i"><div className="b" style={{marginBottom:6}}>Faltan {$(restoOc-num(v.monto))} de ese sueldo.</div>
+      <label className="check"><input type="radio" checked={!v.cerrar} onChange={()=>setV({...v,cerrar:false})} /> Lo que falta lo cobro después</label>
+      <label className="check"><input type="radio" checked={v.cerrar} onChange={()=>setV({...v,cerrar:true})} /> Doy este sueldo por cerrado</label></div>}
     <F label="Entra en"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
     <label className="check"><input type="checkbox" checked={v.ahorro} onChange={e=>setV({...v,ahorro:e.target.checked})} /> Apartarlo como ahorro</label>
-    <F label="Detalle (opcional)"><input value={v.desc} onChange={e=>setV({...v,desc:e.target.value})} placeholder="Ej: Acústico Bar Irlanda" /></F>
+    <F label="Detalle (opcional)"><input value={v.desc} onChange={e=>setV({...v,desc:e.target.value})} placeholder={v.subtipo==='Sueldo'?'Ej: adelanto':'Ej: Acústico Bar Irlanda'} /></F>
     <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
     <div className="btns"><button className="btn pri" onClick={ok}>Guardar ingreso</button>
-      {ed.id&&<button className="btn danger" onClick={()=>{let d={...db,movs:db.movs.filter(x=>x.id!==ed.id)}; if(ed.recKey){const o={...d.ocurr}; delete o[ed.recKey]; if(ed.recKey.startsWith('sueldo|')) o[ed.recKey]={estado:'omitido'}; d.ocurr=o;} save(d); onClose();}}>Eliminar</button>}</div>
-    {ed.recKey&&ed.recKey.startsWith('sueldo|')&&ed.id&&<div className="muted">Si lo eliminás, ese viernes queda sin sueldo.</div>}
+      {ed.id&&<button className="btn danger" onClick={()=>{let d={...db,movs:db.movs.filter(x=>x.id!==ed.id)}; d=quitarCierre(d,ed.recKey); save(d); onClose();}}>Eliminar</button>}</div>
+    {ed.recKey&&ed.id&&<div className="muted">Si lo eliminás, ese sueldo vuelve a quedar pendiente.</div>}
+  </div></Sheet>;
+}
+
+function FormSueldo({db,save,onClose,oc,abrir}){
+  const vivo=sueldosAbiertos(db,oc.key).find(o=>o.key===oc.key)||oc;
+  const cobros=db.movs.filter(m=>m.tipo==='ingreso'&&m.recKey===oc.key);
+  return <Sheet title={`Sueldo del ${fL(oc.prog)}`} onClose={onClose}><div className="form">
+    <div className="row"><span className="l">Previsto</span><b>{$(vivo.monto)}{vivo.fecha!==vivo.prog?` · ${fL(vivo.fecha)}`:''}</b></div>
+    {cobros.map(m=><div className="row" key={m.id}><span className="l">Cobrado el {fL(m.fecha)} en {nombreMedio(db,m.cuenta)}</span><span className="amt pos">+{$(m.monto)}</span></div>)}
+    {vivo.estado==='pendiente'?<div className="row"><span className="l">Falta cobrar</span><b>{$(vivo.resto)}</b></div>:<div className="muted">Este sueldo está cerrado.</div>}
+    <div className="btns" style={{marginTop:6}}>
+      <button className="btn pri" onClick={()=>abrir('ingreso',{inicial:{subtipo:'Sueldo',recKey:oc.key,monto:Math.round(vivo.resto||vivo.monto),cuenta:oc.rec.medio,fecha:hoyStr()}})}>{vivo.fecha>hoyStr()?'Registrar adelanto':'Registrar cobro'}</button>
+      <button className="btn" onClick={()=>abrir('moverCobro',{oc:vivo})}>Cambiar fecha o monto previsto</button>
+      {vivo.estado==='pendiente'&&vivo.cobrado>0&&<button className="btn" onClick={()=>{save({...db,ocurr:{...db.ocurr,[oc.key]:{...(db.ocurr[oc.key]||{}),cerrado:true}}});onClose();}}>Dar por cerrado</button>}
+      {vivo.estado==='pendiente'&&!vivo.cobrado&&<button className="btn danger" onClick={()=>{if(confirm('¿Este viernes no hay sueldo?')){save({...db,ocurr:{...db.ocurr,[oc.key]:{estado:'omitido'}}});onClose();}}}>Este viernes no cobro</button>}
+    </div>
   </div></Sheet>;
 }
 
@@ -662,11 +686,11 @@ function FormPagarRec({db,save,onClose,oc}){
 function FormMoverCobro({db,save,onClose,oc}){
   const [v,setV]=useState({fecha:oc.fecha,monto:Math.round(oc.monto)});
   return <Sheet title={`Sueldo del ${fL(oc.prog)}`} onClose={onClose}><div className="form">
-    <div className="muted">Para un adelanto o un monto distinto solo esta semana. El resto de los viernes no cambia.</div>
+    <div className="muted">Cambia lo previsto solo para este sueldo, por ejemplo si te lo pagan otro día o te avisaron un monto distinto. Para registrar plata que ya cobraste, usá Registrar cobro.</div>
     <F label="Se cobra el"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
     <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} /></F>
-    <div className="btns"><button className="btn pri" onClick={()=>{save({...db,ocurr:{...db.ocurr,[oc.key]:{fecha:v.fecha,monto:num(v.monto)}}});onClose();}}>Guardar</button>
-      <button className="btn" onClick={()=>{const o={...db.ocurr};delete o[oc.key];save({...db,ocurr:o});onClose();}}>Volver al original</button></div>
+    <div className="btns"><button className="btn pri" onClick={()=>{save({...db,ocurr:{...db.ocurr,[oc.key]:{...(db.ocurr[oc.key]||{}),fecha:v.fecha,monto:num(v.monto)}}});onClose();}}>Guardar</button>
+      <button className="btn" onClick={()=>{const x={...(db.ocurr[oc.key]||{})};delete x.fecha;delete x.monto;save({...db,ocurr:{...db.ocurr,[oc.key]:x}});onClose();}}>Volver al original</button></div>
   </div></Sheet>;
 }
 
@@ -678,12 +702,242 @@ function updRes(db,tid,rid,patch,rsAll){
     return {...t,resumenes:rs.sort((a,b)=>a.cierre.localeCompare(b.cierre))}; })};
 }
 
+// ================= LECTOR DE RESÚMENES PDF =================
+const MES_ABR={ene:1,feb:2,mar:3,abr:4,may:5,jun:6,jul:7,ago:8,sep:9,set:9,oct:10,nov:11,dic:12};
+const nAR = s => { const v=parseFloat(String(s).replace(/\$/g,'').replace(/\s/g,'').replace(/\./g,'').replace(',','.')); return isNaN(v)?0:v; };
+const padP = n => String(n).padStart(2,'0');
+const limpiarTxt = s => s.replace(/\s([ÁÉÍÓÚÑáéíóúñ])\s/g,'$1').replace(/\s+/g,' ').trim();
+async function lineasPDF(pdfjs,data){
+  const pdf=await pdfjs.getDocument({data}).promise; const L=[];
+  for(let p=1;p<=pdf.numPages;p++){ const tc=await (await pdf.getPage(p)).getTextContent();
+    const its=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({x:i.transform[4],y:i.transform[5],s:i.str}));
+    its.sort((a,b)=>b.y-a.y||a.x-b.x); const rows=[];
+    its.forEach(it=>{ const r=rows.find(r=>Math.abs(r.y-it.y)<=3); if(r) r.items.push(it); else rows.push({y:it.y,items:[it]}); });
+    rows.sort((a,b)=>b.y-a.y).forEach(r=>L.push(limpiarTxt(r.items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(' '))));
+  }
+  return L;
+}
+function detectarBanco(L){ const T=L.join(' ').toUpperCase(); if(T.includes('NARANJA')) return 'naranja'; if(T.includes('BBVA')) return 'bbva'; return null; }
+const ES_CARGO = /IMPUESTO|SELLOS|IVA |IVA$|PERCEPCI|DB\.RG|CR\.RG|INTERES|COMISI|CARGO POR|MANTENIMIENTO DE CUENTA|PUNITORIO/i;
+
+function parseBBVA(L){
+  const T=L.join('\n'); const TU=T.toUpperCase();
+  const reD=/(\d{2})-([A-Za-z]{3})-(\d{2})/g;
+  const iso=(d,m,y)=>`20${y}-${padP(MES_ABR[m.toLowerCase()]||1)}-${d}`;
+  const fechasTras=(re,n)=>{ const m=re.exec(TU); if(!m) return []; const sub=T.slice(m.index); const out=[]; let x; const r=new RegExp(reD.source,'g'); while((x=r.exec(sub))&&out.length<n) out.push(iso(x[1],x[2],x[3])); return out; };
+  const [cierre,vencimiento]=fechasTras(/CIERRE ACTUAL/,2);
+  const otros=fechasTras(/CIERRE ANTERIOR/,4); const proxCierre=otros[2], proxVenc=otros[3], cierreAnterior=otros[0];
+  let pesos=null, usd=0; const reS=/SALDO ACTUAL\s+(-?[\d.]+,\d{2})(?:\s+(-?[\d.]+,\d{2}))?/g; let m; while((m=reS.exec(T))){ pesos=nAR(m[1]); usd=m[2]?nAR(m[2]):0; }
+  const consumos=[]; const cargos=[];
+  let sec=null;
+  L.forEach(l=>{
+    const lu=l.toUpperCase();
+    if(/^SUS PAGOS/i.test(l)){ sec='p'; return; }
+    if(/^CONSUMOS /i.test(l)){ sec='c'; return; }
+    if(lu.startsWith('TOTAL CONSUMOS')){ sec=null; return; }
+    if(lu.startsWith('IMPUESTOS, CARGOS')){ sec='i'; return; }
+    if(lu.startsWith('SALDO ACTUAL')||lu.startsWith('LEGALES')){ sec=null; return; }
+    const mm=l.match(/^(\d{2})-([A-Za-z]{3})-(\d{2})\s+(.*?)\s+(-?[\d.]+,\d{2})$/); if(!mm||!sec) return;
+    const fecha=iso(mm[1],mm[2],mm[3]); let resto=mm[4]; const monto=nAR(mm[5]);
+    if(sec==='p'){ if(!/SU PAGO/i.test(resto)) cargos.push({fecha,desc:resto,monto}); return; }
+    if(sec==='i'){ cargos.push({fecha,desc:resto,monto}); return; }
+    const esUSD=/USD/i.test(resto);
+    resto=resto.replace(/\s\d{5,7}$/,'');
+    let cuota=1,cuotas=1; const c=resto.match(/C\.(\d{2})\/(\d{2})/); if(c){ cuota=+c[1]; cuotas=+c[2]; resto=resto.replace(c[0],''); }
+    resto=resto.replace(/\s*[A-Z]?\d*USD\s+[\d.,]+/i,'').replace(/\s+/g,' ').trim();
+    consumos.push({fecha,desc:resto,monto,cuota,cuotas,usd:esUSD?monto:0});
+  });
+  // tipo de cambio: base del IVA de servicios digitales / consumos en dólares
+  const usdCons=consumos.reduce((a,x)=>a+x.usd,0);
+  const base=(T.match(/IVA RG 4240 21%\(\s*([\d.]+,?\d*)\s*\)/)||[])[1];
+  const tc=base&&usdCons?nAR(base)/usdCons:null;
+  consumos.forEach(x=>{ if(x.usd){ x.monto=tc?Math.round(x.usd*tc*100)/100:0; x.nota=`U$S ${String(x.usd).replace('.',',')}${tc?` (≈ $${Math.round(tc)} por dólar)`:''}`; } });
+  const total=pesos===null?null:Math.round((pesos+(usd&&tc?usd*tc:0))*100)/100;
+  return {banco:'bbva',cierre,vencimiento,proxCierre,proxVenc,cierreAnterior,total,totalPesos:pesos,totalUSD:usd,tipoCambio:tc,consumos,cargos};
+}
+
+function parseNaranja(L){
+  const J=L.join(' ');
+  const vm=J.match(/vence el (\d{2})\/(\d{2})\/(\d{2})/i);
+  const anio=vm?2000+(+vm[3]):new Date().getFullYear();
+  const vencimiento=vm?`20${vm[3]}-${vm[2]}-${vm[1]}`:null;
+  const tm=J.match(/total a pagar es \$\s?([\d.]+,\d{2})/i);
+  const cm=J.match(/resumen actual cerr.{1,2} el (\d{2})\/(\d{2})/i);
+  const conAnio=(d,mo,ref)=>{ let y=anio; if(ref&&+mo>+ref.slice(5,7)+1) y=anio-1; return `${y}-${mo}-${d}`; };
+  const cierre=cm?conAnio(cm[1],cm[2],vencimiento):null;
+  const pm=J.match(/pr.ximo resumen cierra el (\d{2})\/(\d{2})/i);
+  const pv=J.slice(pm?pm.index:0).match(/y vence el (\d{2})\/(\d{2})\./i);
+  const ajY=(d,mo)=>{ let y=anio; if(cierre&&`${y}-${mo}-${d}`<cierre) y++; return `${y}-${mo}-${d}`; };
+  const proxCierre=pm?ajY(pm[1],pm[2]):null, proxVenc=pv?ajY(pv[1],pv[2]):null;
+  const am=J.match(/resumen anterior cerr.{1,2} el (\d{2})\/(\d{2})/i);
+  const cierreAnterior=am?conAnio(am[1],am[2],cierre||vencimiento):null;
+  const consumos=[]; const cargos=[];
+  L.forEach(l=>{
+    const mm=l.match(/^(\d{2})\/(\d{2})\/(\d{2})\s+(.*?)\s+(-?[\d.]+,\d{2})$/); if(!mm) return;
+    const fecha=`20${mm[3]}-${mm[2]}-${mm[1]}`; let resto=mm[4]; const monto=nAR(mm[5]);
+    if(/PAGO EN PESOS|PAGO EN D/i.test(resto)) return;
+    if(resto.startsWith('*')){ cargos.push({fecha,desc:resto.replace(/^\*/,'').trim(),monto}); return; }
+    resto=resto.replace(/^(NX Virtual|Naranja X|NX Visa|NX Master\w*|NX Amex)\s+\d+\s+/i,'');
+    let cuota=1,cuotas=1, debito=false;
+    const c=resto.match(/\s(\d{2})\/(\d{2})$/); if(c){ cuota=+c[1]; cuotas=+c[2]; resto=resto.slice(0,c.index); }
+    else { const u=resto.match(/\s(\d{2}|Z\d?|Deb\.Aut\.)$/i); if(u){ debito=/Deb/i.test(u[1]); resto=resto.slice(0,u.index); } }
+    consumos.push({fecha,desc:resto.trim(),monto,cuota,cuotas,debito});
+  });
+  // cargos sin fecha (IVA, sellos)
+  const iv=J.match(/Base Imponible \$[\d.,]+\)\s+([\d.]+,\d{2})/i); if(iv) cargos.push({fecha:cierre,desc:'IVA',monto:nAR(iv[1])});
+  const se=J.match(/Impuesto de Sellos\s+([\d.]+,\d{2})/i); if(se) cargos.push({fecha:cierre,desc:'Impuesto de sellos',monto:nAR(se[1])});
+  return {banco:'naranja',cierre,vencimiento,proxCierre,proxVenc,cierreAnterior,total:tm?nAR(tm[1]):null,consumos,cargos};
+}
+function leerResumen(L){ const b=detectarBanco(L); if(b==='naranja') return parseNaranja(L); if(b==='bbva') return parseBBVA(L); return null; }
+const palabras = s => (s||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>=4&&!['PEDIDOSYA','PROPINA'].includes(w));
+const simil = (a,b) => { const A=palabras(a), B=palabras(b); return A.some(w=>B.includes(w)); };
+function sugerirCat(desc){ const d=(desc||'').toUpperCase();
+  if(/PEDIDOSYA|PEDIDOS YA|RAPPI/.test(d)) return 'PedidosYa';
+  if(/FARMAC/.test(d)) return 'Farmacia';
+  if(/SPOTIFY|GOOGLE|NETFLIX|YOUTUBE|APPLE|DISNEY|HBO|MAX |PRIME|TINDER|CLARO|PERSONAL|MOVISTAR|TURBO/.test(d)) return 'Suscripciones';
+  if(/TICKET|ENTRADA|CINE|TEATRO/.test(d)) return 'Salidas';
+  if(/CARREFOUR|DISCO|VEA|CHANGOMAS|SUPER|DIA |COTO|JUMBO/.test(d)) return 'Supermercado';
+  if(/YPF|SHELL|AXION|PUMA|VOLKSWAGEN|AUTO/.test(d)) return 'Auto';
+  if(/MARATHON|ROPA|ZAPAT|NIKE|ADIDAS/.test(d)) return 'Ropa';
+  return 'Otros varios'; }
+
+
+let pdfjsCarga=null;
+function cargarPdfJs(){
+  if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if(pdfjsCarga) return pdfjsCarga;
+  pdfjsCarga=new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload=()=>{ window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; res(window.pdfjsLib); };
+    sc.onerror=()=>{ pdfjsCarga=null; rej(new Error('No se pudo cargar el lector de PDF. Revisá la conexión a internet.')); }; document.head.appendChild(sc); });
+  return pdfjsCarga;
+}
+function materializar(d,t,item,monto,rid){ const id=uid();
+  return {...d, consumos:[...d.consumos,{id,tarjeta:t.id,fecha:item.fechaCompra,desc:item.desc,cat:item.cat||'Suscripciones',montoCuota:monto,cuotas:1,cuotasPagadas:0,recKey:item.key,resumenInicial:rid}],
+    ocurr:{...d.ocurr,[item.key]:{...(d.ocurr[item.key]||{}),estado:'hecho',monto,fecha:item.fechaCompra,consumoId:id}}}; }
+function fijarSiguiente(d,t,sigId,cierre,venc){ if(!sigId||!cierre||!venc) return d;
+  return {...d,tarjetas:d.tarjetas.map(x=>{ if(x.id!==t.id) return x; const ex=x.resumenes.find(y=>y.id===sigId);
+    return {...x,resumenes:[...x.resumenes.filter(y=>y.id!==sigId),{...(ex||{}),id:sigId,cierre,vencimiento:venc}].sort((a,b)=>a.cierre.localeCompare(b.cierre))}; })}; }
+// Compara el PDF con lo registrado en ese resumen
+function conciliar(db,t,rid,pdf){
+  const {items}=itemsTarjeta(db,t,addD(hoyStr(),200));
+  const app=items.filter(x=>x.resumenId===rid&&!x.ajuste&&!x.arrastre);
+  const usados=new Set(); const ok=[], nuevos=[];
+  pdf.consumos.forEach(pc=>{
+    let best=-1, sc=1e12;
+    app.forEach((a,i)=>{ if(usados.has(i)) return;
+      const tol=Math.max(2,pc.monto*0.02); const dm=Math.abs(a.monto-pc.monto); const parecido=simil(a.desc,pc.desc);
+      if(dm>tol&&!(a.proyectado&&parecido&&dm<=pc.monto*0.25)) return;
+      const dd=pc.cuotas>1||a.previo?0:Math.min(30,Math.abs(diffD(a.fechaCompra,pc.fecha)));
+      const v=dm+dd*20-(parecido?300:0); if(v<sc){ sc=v; best=i; } });
+    if(best>=0){ usados.add(best); ok.push({pc,a:app[best]}); }
+    else nuevos.push({pc,cat:sugerirCat(pc.desc),incluir:true,tercero:false});
+  });
+  // cargos que en realidad son recurrentes previstos (ej. Plan Turbo)
+  const cargos=[...pdf.cargos];
+  app.forEach((a,i)=>{ if(usados.has(i)||!a.proyectado) return; const j=cargos.findIndex(c=>simil(c.desc,a.desc)||Math.abs(c.monto-a.monto)<=Math.max(2,a.monto*0.02)); if(j>=0){ usados.add(i); ok.push({pc:{...cargos[j],cuota:1,cuotas:1},a,deCargo:true}); cargos.splice(j,1); } });
+  const faltan=app.map((a,i)=>({a,i})).filter(x=>!usados.has(x.i)).map(({a})=>({a,accion:a.proyectado?'omitir':(a.cuotaN||0)===0&&!a.previo?'mover':'dejar'}));
+  return {ok,nuevos,faltan,cargos};
+}
+
+function FormResumenPDF({db,save,onClose,t}){
+  const [estado,setEstado]=useState({paso:'elegir'});
+  const fileRef=useRef();
+  const hoy=hoyStr();
+  const leer=async f=>{
+    setEstado({paso:'leyendo'});
+    try{ const lib=await cargarPdfJs(); const L=await lineasPDF(lib,new Uint8Array(await f.arrayBuffer())); const pdf=leerResumen(L);
+      if(!pdf||!pdf.cierre) return setEstado({paso:'error',msg:'No reconocí el formato del resumen. Por ahora la app lee los de BBVA y Naranja X. Podés confirmarlo a mano con "Confirmar resumen".'});
+      const esperado=t.id==='tnx'?'naranja':t.id==='tbbva'?'bbva':null;
+      const {rs}=itemsTarjeta(db,t,addD(hoy,200));
+      const r=[...rs].sort((a,b)=>Math.abs(diffD(a.cierre,pdf.cierre))-Math.abs(diffD(b.cierre,pdf.cierre)))[0];
+      if(!r||Math.abs(diffD(r.cierre,pdf.cierre))>10) return setEstado({paso:'error',msg:`El resumen cierra el ${fL(pdf.cierre)} y no coincide con ningún período de esta tarjeta.`});
+      if(r.pagado&&r.confirmado) return setEstado({paso:'error',msg:`Ese resumen (cierre ${fC(r.cierre)}) ya está confirmado y pagado.`});
+      const conc=conciliar(db,t,r.id,pdf);
+      const idx=rs.findIndex(x=>x.id===r.id);
+      setEstado({paso:'revisar',pdf,r,conc,rs,sig:rs[idx+1],prevCierre:pdf.cierreAnterior||rs[idx-1]?.cierre||addD(pdf.cierre,-31),
+        otroBanco:esperado&&pdf.banco!==esperado,
+        v:{total:pdf.total!=null?String(pdf.total).replace('.',','):'',cierre:pdf.cierre,venc:pdf.vencimiento||r.vencimiento,sigCierre:pdf.proxCierre||'',sigVenc:pdf.proxVenc||''}});
+    }catch(e){ setEstado({paso:'error',msg:e.message||'No se pudo leer el archivo.'}); }
+  };
+  if(estado.paso!=='revisar') return <Sheet title={`Cargar resumen ${t.nombre}`} onClose={onClose}><div className="form">
+    {estado.paso==='elegir'&&<><div className="muted">Elegí el PDF del resumen que te llegó. Se lee en este dispositivo, no se sube a ningún lado.</div>
+      <button className="btn pri" onClick={()=>fileRef.current.click()}>Elegir PDF</button>
+      <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={e=>{const f=e.target.files[0]; if(f) leer(f);}} /></>}
+    {estado.paso==='leyendo'&&<div className="muted">Leyendo el resumen…</div>}
+    {estado.paso==='error'&&<><div className="alert d"><div className="b">{estado.msg}</div></div><button className="btn" onClick={()=>setEstado({paso:'elegir'})}>Probar con otro archivo</button></>}
+  </div></Sheet>;
+
+  const {pdf,r,conc,sig,v,prevCierre}=estado;
+  const setV=x=>setEstado({...estado,v:{...v,...x}});
+  const setNuevo=(i,x)=>setEstado({...estado,conc:{...conc,nuevos:conc.nuevos.map((n,j)=>j===i?{...n,...x}:n)}});
+  const setFalta=(i,x)=>setEstado({...estado,conc:{...conc,faltan:conc.faltan.map((n,j)=>j===i?{...n,...x}:n)}});
+  const terceros=conc.ok.filter(x=>x.a.tercero).reduce((a,x)=>a+x.pc.monto,0)+conc.nuevos.filter(n=>n.incluir&&n.tercero).reduce((a,n)=>a+n.pc.monto,0);
+  const propio=num(v.total)-terceros;
+  const cargosTot=conc.cargos.reduce((a,c)=>a+c.monto,0);
+  const confirmar=()=>{
+    let d={...db};
+    conc.ok.filter(x=>x.a.proyectado).forEach(x=>{ d=materializar(d,t,x.a,x.pc.monto,r.id); });
+    const nuevosC=conc.nuevos.filter(n=>n.incluir).map(n=>({id:uid(),tarjeta:t.id,fecha:n.pc.fecha,desc:n.pc.desc+(n.pc.nota?` (${n.pc.nota})`:''),cat:n.cat,montoCuota:n.pc.monto,cuotas:n.pc.cuotas||1,cuotasPagadas:(n.pc.cuota||1)-1,tercero:n.tercero,resumenInicial:r.id,previo:n.pc.fecha<=prevCierre,desdePDF:true}));
+    d.consumos=[...d.consumos,...nuevosC];
+    conc.faltan.forEach(f=>{
+      if(f.a.proyectado){ if(f.accion==='omitir') d.ocurr={...d.ocurr,[f.a.key]:{estado:'omitido'}}; return; }
+      if(f.accion==='mover'&&sig) d.consumos=d.consumos.map(c=>c.id===f.a.consumoId?{...c,resumenInicial:sig.id}:c);
+      if(f.accion==='eliminar') d.consumos=d.consumos.filter(c=>c.id!==f.a.consumoId);
+    });
+    // ajuste: diferencia entre el total real (tu parte) y lo que queda registrado en ese resumen
+    const tt=d.tarjetas.find(x=>x.id===t.id);
+    const tmp=updRes(d,t.id,r.id,{ajuste:0},estado.rs);
+    const {items}=itemsTarjeta(tmp,tmp.tarjetas.find(x=>x.id===t.id),addD(hoy,200));
+    const base=items.filter(x=>x.resumenId===r.id&&!x.tercero&&!x.ajuste).reduce((a,b)=>a+b.monto,0);
+    d=updRes(d,t.id,r.id,{confirmado:true,estimado:false,cierre:v.cierre,vencimiento:v.venc,ajuste:Math.round((propio-base)*100)/100,totalPDF:num(v.total),cargosPDF:conc.cargos},estado.rs);
+    d=fijarSiguiente(d,t,sig?.id,v.sigCierre,v.sigVenc);
+    save(d); onClose();
+  };
+  return <Sheet title={`Resumen ${t.nombre}`} onClose={onClose}><div className="form">
+    {estado.otroBanco&&<div className="alert d"><div className="b">Este PDF parece de otra tarjeta. Revisá que estés cargándolo en {t.nombre}.</div></div>}
+    <div className="two"><F label="Cierre"><input type="date" value={v.cierre} onChange={e=>setV({cierre:e.target.value})} /></F>
+      <F label="Vencimiento"><input type="date" value={v.venc} onChange={e=>setV({venc:e.target.value})} /></F></div>
+    <F label={`Total a pagar${pdf.totalUSD?` (incluye U$S ${String(pdf.totalUSD).replace('.',',')} pasados a pesos)`:''}`}><MontoInput value={v.total} onChange={x=>setV({total:x})} /></F>
+    {terceros>0&&<div className="muted">Tu parte: {$(propio)} · de terceros: {$(terceros)}</div>}
+    <div className="two"><F label="Próximo cierre"><input type="date" value={v.sigCierre} onChange={e=>setV({sigCierre:e.target.value})} /></F>
+      <F label="Próximo vencimiento"><input type="date" value={v.sigVenc} onChange={e=>setV({sigVenc:e.target.value})} /></F></div>
+
+    <div className="card" style={{margin:0}}><h2>✅ Coinciden con lo registrado <span className="muted">{conc.ok.length}</span></h2>
+      {conc.ok.map((x,i)=><div className="row" key={i}><div className="l"><div style={{fontSize:13}}>{x.pc.desc}{x.pc.cuotas>1?` (${x.pc.cuota}/${x.pc.cuotas})`:''}</div><div className="s">{fC(x.pc.fecha)}{x.a.proyectado?' · era previsto':''}</div></div><span className="amt" style={{fontSize:13}}>{$(x.pc.monto)}</span></div>)}
+      {!conc.ok.length&&<div className="empty">Ninguno.</div>}</div>
+
+    <div className="card" style={{margin:0,background:'var(--warn-bg)',borderColor:'transparent'}}><h2>➕ En el resumen y no cargados <span className="muted">{conc.nuevos.length}</span></h2>
+      {conc.nuevos.length>0&&<div className="muted" style={{marginBottom:6}}>Se agregan solos. Revisá la categoría o destildá los que no correspondan.</div>}
+      {conc.nuevos.map((n,i)=><div key={i} style={{padding:'8px 0',borderBottom:'1px solid var(--line)'}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:8}}><label className="check" style={{fontSize:13}}><input type="checkbox" checked={n.incluir} onChange={e=>setNuevo(i,{incluir:e.target.checked})} /> {n.pc.desc}{n.pc.cuotas>1?` (${n.pc.cuota}/${n.pc.cuotas})`:''}</label><b style={{fontSize:13,whiteSpace:'nowrap'}}>{$(n.pc.monto)}</b></div>
+        <div className="mini">{fL(n.pc.fecha)}{n.pc.nota?` · ${n.pc.nota}`:''}{n.pc.fecha<=prevCierre?' · compra anterior (no cuenta en el balance de estas semanas)':''}</div>
+        {n.incluir&&<div style={{display:'flex',gap:8,marginTop:6,alignItems:'center'}}><select value={n.cat} onChange={e=>setNuevo(i,{cat:e.target.value})} style={{flex:1,padding:'6px 8px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}}>
+          <optgroup label="Gastos varios">{db.catsVarios.map(c=><option key={c}>{c}</option>)}</optgroup><optgroup label="Otras">{db.catsOtras.map(c=><option key={c}>{c}</option>)}</optgroup></select>
+          <label className="check" style={{fontSize:12}}><input type="checkbox" checked={n.tercero} onChange={e=>setNuevo(i,{tercero:e.target.checked})} /> de terceros</label></div>}
+      </div>)}
+      {!conc.nuevos.length&&<div className="empty">Cargaste todo. 👌</div>}</div>
+
+    {conc.faltan.length>0&&<div className="card" style={{margin:0}}><h2>⚠️ Registrados que no figuran <span className="muted">{conc.faltan.length}</span></h2>
+      {conc.faltan.map((f,i)=><div key={i} style={{padding:'8px 0',borderBottom:'1px solid var(--surface2)'}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:8,fontSize:13}}><span>{f.a.desc}</span><b>{$(f.a.monto)}</b></div>
+        <div className="seg" style={{marginTop:6}}>{(f.a.proyectado?[['omitir','No se cobró'],['dejar','Dejar previsto']]:[['mover','Pasa al próximo'],['dejar','Dejar'],['eliminar','Eliminar']]).map(([k,l])=><button key={k} className={f.accion===k?'on':''} onClick={()=>setFalta(i,{accion:k})}>{l}</button>)}</div>
+      </div>)}</div>}
+
+    <div className="card" style={{margin:0}}><h2>Impuestos, intereses y cargos <span className="muted">{$(cargosTot)}</span></h2>
+      {conc.cargos.map((c,i)=><div className="row" key={i}><span className="l" style={{fontSize:13}}>{c.desc}</span><span className="amt" style={{fontSize:13}}>{$(c.monto)}</span></div>)}
+      <div className="mini">Quedan como ajuste del resumen. Si ves intereses por mora, ojo con pagar después del vencimiento.</div></div>
+
+    <button className="btn pri" onClick={confirmar}>Confirmar resumen</button>
+  </div></Sheet>;
+}
+
 function FormConfirmar({db,save,onClose,t,r,tot,rsAll}){
   const sig=rsAll[rsAll.findIndex(x=>x.id===r.id)+1];
   const base=tot.propio-(r.ajuste||0);
   const [v,setV]=useState({total:Math.round(tot.propio),venc:r.vencimiento,sigCierre:sig?.cierre||'',sigVenc:sig?.vencimiento||''});
   const ok=()=>{ const real=num(v.total);
-    let d=updRes(db,t.id,r.id,{confirmado:true,vencimiento:v.venc,ajuste:Math.round((real-base)*100)/100,estimado:false},rsAll);
+    let d=db; tot.items.filter(x=>x.proyectado).forEach(x=>{ d=materializar(d,t,x,x.monto,r.id); });
+    d=updRes(d,t.id,r.id,{confirmado:true,vencimiento:v.venc,ajuste:Math.round((real-base)*100)/100,estimado:false},rsAll);
     if(sig&&v.sigCierre&&v.sigVenc){ const tt=d.tarjetas.find(x=>x.id===t.id); const ex=tt.resumenes.find(x=>x.id===sig.id);
       d={...d,tarjetas:d.tarjetas.map(x=>x.id!==t.id?x:{...x,resumenes:[...x.resumenes.filter(y=>y.id!==sig.id),{...(ex||{}),id:sig.id,cierre:v.sigCierre,vencimiento:v.sigVenc}].sort((a,b)=>a.cierre.localeCompare(b.cierre))})}; }
     save(d); onClose(); };
@@ -730,12 +984,18 @@ function Inicio({db,save,abrir}){
   const pv=recV?presupuestoSemanas(db,recV,hoyIni)[hoyIni]:null, pc=recC?presupuestoSemanas(db,recC,hoyIni)[hoyIni]:null;
   const diasRest=diffD(hoy,addD(hoyIni,6))+1;
   const alerts=[];
+  // sueldos para confirmar
+  ocurrencias(db,db.fechaInicio,hoy).filter(o=>o.rec.tipo==='ingreso'&&o.estado==='pendiente'&&o.fecha<=hoy).forEach(o=>alerts.push({k:'s'+o.key,cls:'w',
+    h:`¿Cobraste el sueldo del ${fL(o.prog)}?`,b:o.cobrado?`Ya cobraste ${$(o.cobrado)}. Falta ${$(o.resto)}.`:`Previsto ${$(o.resto)} en ${nombreMedio(db,o.rec.medio)}.`,
+    acc:[[`Sí, ${$(o.resto)}`,()=>save({...db,movs:[...db.movs,{id:uid(),fecha:o.fecha<=hoy?o.fecha:hoy,tipo:'ingreso',subtipo:'Sueldo',monto:o.resto,cuenta:o.rec.medio,desc:'Sueldo',recKey:o.key}]})],
+      ['Cobré distinto',()=>abrir('ingreso',{inicial:{subtipo:'Sueldo',recKey:o.key,monto:Math.round(o.resto),cuenta:o.rec.medio,fecha:o.fecha}})],
+      ['Todavía no',()=>abrir('moverCobro',{oc:o})]]}));
   // tarjetas
   db.tarjetas.forEach(t=>{
     const {rs,items}=itemsTarjeta(db,t,addD(hoy,90));
     const pend=rs.filter(r=>!r.pagado);
     const sinConf=pend.find(r=>r.cierre<=hoy&&!r.confirmado);
-    if(sinConf){ const tot=totalesResumen(items,sinConf.id); alerts.push({k:'c'+t.id,cls:'w',h:`Cerró el resumen de ${t.nombre}`,b:`Cargá el total real y el vencimiento que figuran en el resumen. Registrado hasta ahora: ${$(tot.propio)}.`,acc:[['Confirmar resumen',()=>abrir('confirmar',{t,r:sinConf,tot,rsAll:rs})]]}); }
+    if(sinConf){ const tot=totalesResumen(items,sinConf.id); alerts.push({k:'c'+t.id,cls:'w',h:`Cerró el resumen de ${t.nombre}`,b:`Cargá el PDF cuando te llegue: la app lo compara con lo que registraste. Registrado hasta ahora: ${$(tot.propio)}.`,acc:[['Cargar PDF',()=>abrir('resumenPDF',{t})],['Confirmar a mano',()=>abrir('confirmar',{t,r:sinConf,tot,rsAll:rs})]]}); }
     const prox=pend.find(r=>totalesResumen(items,r.id).propio>0||totalesResumen(items,r.id).terceros>0);
     if(prox){ const tot=totalesResumen(items,prox.id); const dd=diffD(hoy,prox.vencimiento);
       const disp=saldoCuentaAntes(db,t.cuentaPago,prox.vencimiento,prox.id);
@@ -837,7 +1097,7 @@ function FormEsperado({db,save,onClose,e}){
     <F label="Descripción"><input value={v.desc} onChange={x=>setV({...v,desc:x.target.value})} placeholder={v.tipo==='gasto'?'Ej: Comisión inmobiliaria 2/2':'Ej: Show sábado'} /></F>
     <div className="two"><F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} /></F>
       <F label="Fecha"><input type="date" value={v.fecha} onChange={x=>setV({...v,fecha:x.target.value})} /></F></div>
-    {v.tipo==='ingreso'&&<F label="Tipo"><div className="seg">{TIPOS_ING.slice(1).map(t=><button key={t} className={v.subtipo===t?'on':''} onClick={()=>setV({...v,subtipo:t})}>{t}</button>)}</div></F>}
+    {v.tipo==='ingreso'&&<F label="Tipo"><div className="seg">{TIPOS_ING.filter(t=>t!=='Sueldo').map(t=><button key={t} className={v.subtipo===t?'on':''} onClick={()=>setV({...v,subtipo:t})}>{t}</button>)}</div></F>}
     <F label={v.tipo==='gasto'?'Se paga desde':'Entra en'}><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
     {v.tipo==='ingreso'&&<label className="check"><input type="checkbox" checked={v.ahorro} onChange={x=>setV({...v,ahorro:x.target.checked})} /> Apartarlo como ahorro</label>}
     <label className="check"><input type="checkbox" checked={v.tentativo} onChange={x=>setV({...v,tentativo:x.target.checked})} /> A confirmar (fecha o monto inseguros)</label>
@@ -950,6 +1210,7 @@ function TarjetaCard({db,save,abrir,t}){
       <select value={t.cuentaPago} onChange={e=>save({...db,tarjetas:db.tarjetas.map(x=>x.id===t.id?{...x,cuentaPago:e.target.value}:x)})} style={{fontSize:12,border:'1px solid var(--line)',borderRadius:8,padding:'4px 6px',background:'var(--surface)'}} aria-label="Cuenta que paga">
         {db.cuentas.map(c=><option key={c.id} value={c.id}>Paga {c.nombre}</option>)}</select></h2>
     <div className="muted" style={{marginBottom:6}}>Deuda hoy: <b style={{color:'var(--ink)'}}>{$(deudaTarjetas(db,hoy).por[t.id]||0)}</b> (incluye cuotas futuras)</div>
+    <button className="btn sm" style={{marginBottom:6}} onClick={()=>abrir('resumenPDF',{t})}>📄 Cargar resumen PDF</button>
     {visibles.map(r=>{ const tot=totalesResumen(items,r.id); const est=r.estimado||!r.confirmado; const cerrado=r.cierre<=hoy;
       return <div key={r.id} style={{borderTop:'1px solid var(--surface2)',padding:'10px 0'}}>
         <div className="row" style={{border:'none',padding:0,cursor:'pointer'}} onClick={()=>setAbierto(abierto===r.id?null:r.id)}>
@@ -1022,7 +1283,7 @@ function Recurrentes({db,save,abrir}){
   const desc=r=>{ if(r.tipo==='presupuesto') return `tope semanal${r.compensa?', compensa excesos':''}`; const f=r.frec==='semanal'?'cada viernes':r.frec==='quincenal'?'cada 2 viernes':`día ${r.dia}${r.pagoViernes?', se paga el viernes anterior':''}`; return `${f} · ${nombreMedio(db,r.medio)}${r.tipo==='gasto'&&r.estim==='ultimo'?' · aprox., último pagado':''}`; };
   const grupos=[['Ingresos',r=>r.tipo==='ingreso'],['Vivienda',r=>r.grupo==='vivienda'],['Presupuestos semanales',r=>r.tipo==='presupuesto'],['Otros egresos',r=>r.tipo==='gasto'&&r.grupo!=='vivienda']];
   const sueldo=db.recurrentes.find(r=>r.id==='sueldo');
-  const prSueldo=sueldo?ocurrencias(db,hoy,addD(hoy,35)).filter(o=>o.rec.id==='sueldo'&&o.estado==='pendiente'):[];
+  const prSueldo=sueldo?sueldosAbiertos(db).filter(o=>o.rec.id==='sueldo').slice(0,7):[];
   return <div>
     {grupos.map(([g,fn])=>{ const rs=db.recurrentes.filter(fn); if(!rs.length) return null; return <div className="card" key={g}><h2>{g}</h2>
       {rs.map(r=><div className="row" key={r.id} onClick={()=>abrir('rec',{r})} style={{cursor:'pointer',opacity:r.activo===false?.5:1}}>
@@ -1030,8 +1291,8 @@ function Recurrentes({db,save,abrir}){
         <span className="amt">{r.tipo==='ingreso'?'+':''}{$(r.tipo==='presupuesto'?montoVigente(r,hoy):estimado(db,r,hoy))}</span></div>)}
     </div>; })}
     <button className="btn" style={{width:'100%',marginBottom:12}} onClick={()=>abrir('rec',{})}>+ Nuevo recurrente</button>
-    {prSueldo.length>0&&<div className="card"><h2>Próximos sueldos <span className="muted">tocá para adelantar o cambiar</span></h2>
-      {prSueldo.map(o=><div className="row" key={o.key} onClick={()=>abrir('moverCobro',{oc:o})} style={{cursor:'pointer'}}><div className="l"><div className="t">{fL(o.fecha)}</div>{o.ajustada&&<div className="s">original {fL(o.prog)}</div>}{o.fecha!==o.prog&&!o.ajustada&&<div className="s">feriado el {fC(o.prog)}</div>}</div><span className="amt pos">+{$(o.monto)}</span></div>)}</div>}
+    {prSueldo.length>0&&<div className="card"><h2>Sueldos <span className="muted">tocá para cobrar, adelantar o mover</span></h2>
+      {prSueldo.map(o=><div className="row" key={o.key} onClick={()=>abrir('sueldo',{oc:o})} style={{cursor:'pointer'}}><div className="l"><div className="t">{fL(o.fecha)} {o.fecha<hoy&&<span className="chip est">sin confirmar</span>}</div>{o.ajustada&&<div className="s">original {fL(o.prog)}</div>}{o.fecha!==o.prog&&!o.ajustada&&<div className="s">feriado el {fC(o.prog)}</div>}{o.cobrado>0&&<div className="s">cobrado {$(o.cobrado)} · falta {$(o.resto)}</div>}</div><span className="amt pos">+{$(o.resto)}</span></div>)}</div>}
     <div className="card"><h2>Pagos e ingresos previstos <button className="btn sm" onClick={()=>abrir('esperado',{})}>+ Agregar</button></h2>
       {db.esperados.filter(e=>!e.hecho).sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(e=><div className="row" key={e.id} onClick={()=>abrir('esperado',{e})} style={{cursor:'pointer'}}>
         <div className="l"><div className="t">{e.desc}</div><div className="s">{fL(e.fecha)} · {nombreMedio(db,e.cuenta)} {e.tentativo&&<span className="chip est">a confirmar</span>}</div></div>
@@ -1048,6 +1309,7 @@ function Config({db,save,abrir,setDb,nubeProps}){
   const [cat,setCat]=useState('');
   const exportar=(data,nombre)=>{ const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=nombre; document.body.appendChild(a); a.click(); a.remove(); };
   return <div>
+    <div className="card"><h2>Apariencia</h2><div className="seg">{[['claro','☀︎ Claro'],['oscuro','☾ Oscuro']].map(([k,l])=><button key={k} className={(db.tema||'claro')===k?'on':''} onClick={()=>save({...db,tema:k})}>{l}</button>)}</div></div>
     <SeccionNube {...nubeProps} />
     <SeccionInstalar />
     <div className="card"><h2>Saldos</h2><div className="muted" style={{marginBottom:8}}>Si la app no coincide con tus cuentas, ajustalo acá.</div><button className="btn" onClick={()=>abrir('ajuste')}>Ajustar saldos reales</button></div>
@@ -1113,10 +1375,11 @@ function SeccionInstalar(){
 
 // ================= APP =================
 const TABS=[['inicio','Inicio','🏠'],['movs','Movimientos','📝'],['tarjetas','Tarjetas','💳'],['cash','Cashflow','📊'],['rec','Recurrentes','🔁'],['config','Ajustes','⚙️']];
-function migrar(d){ if(!d) return d; return {...d, prestamos:d.prestamos||[]}; }
+function migrar(d){ if(!d) return d; const catsOtras=(d.catsOtras||CATS_OTRAS).includes('Suscripciones')?(d.catsOtras||CATS_OTRAS):[...(d.catsOtras||CATS_OTRAS).slice(0,4),'Suscripciones',...(d.catsOtras||CATS_OTRAS).slice(4)]; return {...d, prestamos:d.prestamos||[], catsOtras, tema:d.tema||'claro'}; }
 function cargar(){ try{ const d=JSON.parse(localStorage.getItem(STORAGE_KEY)); if(d&&d.version===13) return migrar(d); }catch(e){} return null; }
+try{ const d0=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); document.documentElement.setAttribute('data-theme',d0.tema==='oscuro'?'dark':'light'); }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 function App(){
-  const [db,setDbRaw]=useState(()=>autoRegistrar(cargar()||datosIniciales()));
+  const [db,setDbRaw]=useState(()=>migrar(cargar()||datosIniciales()));
   const [tab,setTab]=useState('inicio');
   const [modal,setModal]=useState(null);
   const [viejo,setViejo]=useState(()=>{ try{ return !!localStorage.getItem(OLD_KEY)&&!localStorage.getItem(OLD_KEY+'-respaldado'); }catch(e){ return false; } });
@@ -1157,6 +1420,7 @@ function App(){
   useEffect(()=>{ if(nubeRef.current.url) bajar(); const v=()=>{ if(document.visibilityState==='visible'&&nubeRef.current.url) bajar(); }; const on=()=>{ if(nubeRef.current.url) bajar(); }; document.addEventListener('visibilitychange',v); window.addEventListener('online',on); return ()=>{document.removeEventListener('visibilitychange',v);window.removeEventListener('online',on);}; },[]);
   useEffect(()=>{ const t=setInterval(()=>setDbRaw(d=>autoRegistrar(d)),60*60*1000); const v=()=>{ if(document.visibilityState==='visible') setDbRaw(d=>autoRegistrar(d)); }; document.addEventListener('visibilitychange',v); return ()=>{clearInterval(t);document.removeEventListener('visibilitychange',v);}; },[]);
   useEffect(()=>{ window.scrollTo(0,0); },[tab]);
+  useEffect(()=>{ const osc=db.tema==='oscuro'; document.documentElement.setAttribute('data-theme',osc?'dark':'light'); const m=document.querySelector('meta[name="theme-color"]'); if(m) m.setAttribute('content',osc?'#0F1724':'#16233A'); },[db.tema]);
   const abrir=(tipo,props={})=>setModal({tipo,props});
   const cerrar=()=>setModal(null);
   const mp={db,save,onClose:cerrar,abrir,...(modal?.props||{})};
@@ -1185,6 +1449,8 @@ function App(){
     {modal?.tipo==='rec'&&<FormRec {...mp} />}
     {modal?.tipo==='ajuste'&&<FormAjuste {...mp} />}
     {modal?.tipo==='prestamo'&&<FormPrestamo {...mp} />}
+    {modal?.tipo==='sueldo'&&<FormSueldo {...mp} />}
+    {modal?.tipo==='resumenPDF'&&<FormResumenPDF {...mp} />}
     {modal?.tipo==='devolucion'&&<FormDevolucion {...mp} />}
     <nav className="nav"><div className="in">{TABS.map(([k,l,ic])=><button key={k} className={tab===k?'on':''} onClick={()=>setTab(k)} aria-current={tab===k?'page':undefined}><span className="ic">{ic}</span>{l}</button>)}</div></nav>
   </div>;
