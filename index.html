@@ -4,8 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#16233A">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Finanzas">
 <title>Mis Finanzas — Jorge</title>
-<!-- v13: cuentas, tarjetas al día, cashflow semanal (vie a jue), recurrentes, ahorro -->
+<!-- v14: egresos, préstamos, sincronización con Google Drive, app instalable -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -120,6 +127,8 @@ table.cf tr.sep td{border-top:2px solid var(--ink3)}
 .fab button{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 4px;font-weight:700;font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .fab button .ic{font-size:18px}
 .mini{font-size:11px;color:var(--ink3)}
+.sync{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--ink2)}
+.sync.ok{color:var(--pos)} .sync.err{color:var(--neg);background:var(--neg-bg);border-color:transparent} .sync.conf{color:var(--warn);background:var(--warn-bg);border-color:transparent}
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 </style>
 </head>
@@ -163,7 +172,7 @@ function datosIniciales(){
       {id:'nx', nombre:'Naranja X', color:'var(--nx)', saldoInicial:351421},
       {id:'mp', nombre:'Mercado Pago', color:'var(--mp)', saldoInicial:0},
     ],
-    movs:[], ocurr:{}, snapshots:{}, decisiones:{},
+    movs:[], ocurr:{}, snapshots:{}, decisiones:{}, prestamos:[],
     tarjetas:[
       {id:'tbbva', nombre:'BBVA Visa', color:'var(--bbva)', cuentaPago:'bbva',
         resumenes:[{id:'tbbva-2026-10-22', cierre:'2026-10-22', vencimiento:'2026-11-04'}]},
@@ -342,6 +351,10 @@ function presupuestoSemanas(db,rec,hastaIni){
   return res;
 }
 
+const devuelto = (db,p) => db.movs.filter(m=>m.tipo==='ingreso'&&m.prestamoId===p.id).reduce((a,b)=>a+b.monto,0);
+const pendientePrestamo = (db,p) => Math.max(0, p.monto - devuelto(db,p));
+const totalTeDeben = db => (db.prestamos||[]).reduce((a,p)=>a+pendientePrestamo(db,p),0);
+
 // ================= PROYECCIÓN =================
 // Eventos futuros (desde hoy). Los vencidos sin registrar se ubican hoy.
 function eventosFuturos(db,hasta){
@@ -359,6 +372,9 @@ function eventosFuturos(db,hasta){
     if(e.tipo==='ingreso') ev.push({fecha:f, tipo:'ingreso', cuenta:e.cuenta, monto:e.monto, desc:e.desc, tentativo:e.tentativo, ahorro:e.ahorro, vencido:e.fecha<hoy, esperado:e.id});
     else ev.push({fecha:f, tipo:'gasto', grupo:'unico', cuenta:e.cuenta, monto:e.monto, desc:e.desc, tentativo:e.tentativo, vencido:e.fecha<hoy, esperado:e.id});
   });
+  // devoluciones de préstamos con fecha prevista
+  (db.prestamos||[]).forEach(p=>{ const pen=pendientePrestamo(db,p); if(pen<=0||!p.fechaDevolucion) return; const f=at(p.fechaDevolucion); if(f>hasta) return;
+    ev.push({fecha:f, tipo:'ingreso', cuenta:p.cuenta, monto:pen, desc:`Devolución de ${p.persona}`, tentativo:true, vencido:p.fechaDevolucion<hoy, prestamo:p.id}); });
   // presupuestos (lo que falta gastar de la semana actual + semanas futuras)
   const hoyIni=viernesDe(hoy);
   db.recurrentes.filter(r=>r.tipo==='presupuesto'&&r.activo!==false).forEach(rec=>{
@@ -403,11 +419,12 @@ function cashflow(db,nSem=12){
   const ahorroReal=Object.values(real.ah).reduce((a,b)=>a+b,0);
   const cols=sems.map((w,i)=>{
     const enW=f=>f>=w.a&&f<=w.b;
-    const det={ingresos:[],vivienda:[],fijos:[],unicos:[],presup:[],tarjeta:[],gastosReales:[],pagos:[]};
+    const det={ingresos:[],vivienda:[],fijos:[],unicos:[],presup:[],tarjeta:[],gastosReales:[],prestamos:[],pagos:[]};
     // reales de la semana (hasta hoy)
     db.movs.filter(m=>enW(m.fecha)&&m.fecha<=hoy).forEach(m=>{
       if(m.tipo==='ingreso') det.ingresos.push({fecha:m.fecha,desc:m.desc+(m.ahorro?' (ahorro)':''),monto:m.monto,real:true,cuenta:m.cuenta});
-      if(m.tipo==='gasto') det.gastosReales.push({fecha:m.fecha,desc:m.desc,monto:m.monto,real:true,cuenta:m.cuenta});
+      if(m.tipo==='gasto'&&m.prestamoId) det.prestamos.push({fecha:m.fecha,desc:m.desc,monto:m.monto,real:true,cuenta:m.cuenta});
+      else if(m.tipo==='gasto') det.gastosReales.push({fecha:m.fecha,desc:m.desc,monto:m.monto,real:true,cuenta:m.cuenta});
       if(m.tipo==='pagoResumen') det.pagos.push({fecha:m.fecha,desc:m.desc,monto:m.montoPropio??m.monto,real:true,cuenta:m.cuenta});
       if(m.tipo==='ajuste') (m.monto>=0?det.ingresos:det.gastosReales).push({fecha:m.fecha,desc:m.desc,monto:Math.abs(m.monto),real:true,cuenta:m.cuenta});
     });
@@ -429,7 +446,7 @@ function cashflow(db,nSem=12){
       else det.fijos.push(it);
     });
     const S=a=>a.reduce((x,y)=>x+y.monto,0);
-    const ingresos=S(det.ingresos), egresos=S(det.vivienda)+S(det.fijos)+S(det.unicos)+S(det.presup)+S(det.gastosReales)+S(det.tarjeta);
+    const ingresos=S(det.ingresos), egresos=S(det.vivienda)+S(det.fijos)+S(det.unicos)+S(det.presup)+S(det.gastosReales)+S(det.prestamos)+S(det.tarjeta);
     const balance=ingresos-egresos;
     // proyectado por cuenta al cierre de la semana
     const porCuenta={...real.s};
@@ -491,7 +508,7 @@ function Bar({label,usado,tope,nota}){
 }
 
 // ================= FORMULARIOS =================
-function FormGasto({db,save,onClose,inicial}){
+function FormGasto({db,save,onClose,inicial,abrir}){
   const ed=inicial||{};
   const [v,setV]=useState({monto:ed.monto??'',desc:ed.desc||'',cat:ed.cat||'PedidosYa',medio:ed.medio||'bbva',cuotas:ed.cuotas||1,fecha:ed.fecha||hoyStr(),tercero:!!ed.tercero});
   const tarjeta=esTarjeta(db,v.medio);
@@ -504,7 +521,8 @@ function FormGasto({db,save,onClose,inicial}){
     else d.movs=[...d.movs,{id:ed.kind==='mov'?ed.id:uid(),fecha:v.fecha,tipo:'gasto',monto:m,cuenta:v.medio,desc:v.desc||v.cat,cat:v.cat}];
     save(d); onClose();
   };
-  return <Sheet title={ed.id?'Editar gasto':'Registrar gasto'} onClose={onClose}><div className="form">
+  return <Sheet title={ed.id?'Editar egreso':'Registrar egreso'} onClose={onClose}><div className="form">
+    {!ed.id&&abrir&&<button className="btn sm" style={{justifySelf:'start'}} onClick={()=>abrir('prestamo')}>¿Prestaste plata? Registrala como préstamo</button>}
     <F label="Monto total"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
     <F label="Pagado con"><SelMedio db={db} value={v.medio} onChange={x=>setV({...v,medio:x})} /></F>
     {tarjeta&&<div className="two">
@@ -516,10 +534,61 @@ function FormGasto({db,save,onClose,inicial}){
       <optgroup label="Otras">{db.catsOtras.map(c=><option key={c}>{c}</option>)}</optgroup></select></F>
     <F label="Detalle (opcional)"><input value={v.desc} onChange={e=>setV({...v,desc:e.target.value})} placeholder="Ej: PedidosYa pizza" /></F>
     <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
-    {tarjeta&&<label className="check"><input type="checkbox" checked={v.tercero} onChange={e=>setV({...v,tercero:e.target.checked})} /> Lo paga otra persona (no cuenta como gasto mío)</label>}
-    <div className="btns"><button className="btn pri" onClick={ok}>Guardar gasto</button>
+    {tarjeta&&<label className="check"><input type="checkbox" checked={v.tercero} onChange={e=>setV({...v,tercero:e.target.checked})} /> Lo paga otra persona (no cuenta como egreso mío)</label>}
+    <div className="btns"><button className="btn pri" onClick={ok}>Guardar egreso</button>
       {ed.id&&<button className="btn danger" onClick={()=>{let d={...db}; if(ed.kind==='mov') d.movs=d.movs.filter(x=>x.id!==ed.id); else d.consumos=d.consumos.filter(x=>x.id!==ed.id); save(d); onClose();}}>Eliminar</button>}</div>
   </div></Sheet>;
+}
+
+function FormPrestamo({db,save,onClose,p}){
+  const ed=p||{};
+  const [v,setV]=useState({persona:ed.persona||'',monto:ed.monto??'',cuenta:ed.cuenta||'bbva',fecha:ed.fecha||hoyStr(),fechaDevolucion:ed.fechaDevolucion||'',nota:ed.nota||''});
+  const personas=[...new Set((db.prestamos||[]).map(x=>x.persona))];
+  const ok=()=>{ const m=num(v.monto); if(m<=0||!v.persona.trim()) return;
+    const id=ed.id||uid(); const movId=ed.movId||uid(); const persona=v.persona.trim();
+    const mov={id:movId,fecha:v.fecha,tipo:'gasto',monto:m,cuenta:v.cuenta,desc:`Préstamo a ${persona}`,cat:'Préstamo',prestamoId:id};
+    const pr={id,persona,monto:m,cuenta:v.cuenta,fecha:v.fecha,fechaDevolucion:v.fechaDevolucion,nota:v.nota,movId};
+    save({...db,movs:[...db.movs.filter(x=>x.id!==movId),mov],prestamos:[...(db.prestamos||[]).filter(x=>x.id!==id),pr]}); onClose(); };
+  const borrar=()=>{ if(!confirm('¿Eliminar el préstamo y sus devoluciones?')) return; save({...db,movs:db.movs.filter(x=>x.prestamoId!==ed.id),prestamos:db.prestamos.filter(x=>x.id!==ed.id)}); onClose(); };
+  return <Sheet title={ed.id?`Préstamo a ${ed.persona}`:'Prestar plata'} onClose={onClose}><div className="form">
+    <F label="¿A quién?"><input list="personas-prestamo" value={v.persona} onChange={e=>setV({...v,persona:e.target.value})} placeholder="Nombre" autoFocus={!ed.id} />
+      <datalist id="personas-prestamo">{personas.map(x=><option key={x} value={x} />)}</datalist></F>
+    <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} /></F>
+    <F label="Sale de"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
+    <div className="two"><F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
+      <F label="Me lo devuelve (opcional)"><input type="date" value={v.fechaDevolucion} onChange={e=>setV({...v,fechaDevolucion:e.target.value})} /></F></div>
+    <F label="Nota (opcional)"><input value={v.nota} onChange={e=>setV({...v,nota:e.target.value})} placeholder="Ej: para el arreglo del auto" /></F>
+    <div className="muted">Cuenta como egreso esta semana. Si cargás fecha de devolución, aparece en el cashflow como ingreso previsto.</div>
+    <div className="btns"><button className="btn pri" onClick={ok}>{ed.id?'Guardar cambios':'Registrar préstamo'}</button>{ed.id&&<button className="btn danger" onClick={borrar}>Eliminar</button>}</div>
+  </div></Sheet>;
+}
+function FormDevolucion({db,save,onClose,p}){
+  const pen=pendientePrestamo(db,p);
+  const [v,setV]=useState({monto:Math.round(pen),cuenta:p.cuenta,fecha:hoyStr()});
+  const ok=()=>{ const m=num(v.monto); if(m<=0) return;
+    save({...db,movs:[...db.movs,{id:uid(),fecha:v.fecha,tipo:'ingreso',subtipo:'Devolución de préstamo',monto:m,cuenta:v.cuenta,desc:`Devolución de ${p.persona}`,prestamoId:p.id}]}); onClose(); };
+  return <Sheet title={`Devolución de ${p.persona}`} onClose={onClose}><div className="form">
+    <div className="muted">Le prestaste {$(p.monto)} el {fL(p.fecha)}. Pendiente: {$(pen)}.</div>
+    <F label="Monto devuelto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
+    <F label="Entró en"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
+    <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
+    <div className="muted">Si te devuelve en partes, cargá cada parte cuando llegue.</div>
+    <button className="btn pri" onClick={ok}>Registrar devolución</button>
+  </div></Sheet>;
+}
+function Prestamos({db,abrir,todos}){
+  const lista=(db.prestamos||[]).map(p=>({...p,pen:pendientePrestamo(db,p),dev:devuelto(db,p)})).filter(p=>todos||p.pen>0).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+  if(!lista.length&&!todos) return null;
+  const tot=lista.reduce((a,p)=>a+p.pen,0);
+  return <div className="card"><h2>Préstamos <span className="muted">te deben {$(tot)}</span></h2>
+    {lista.map(p=><div className="row" key={p.id}>
+      <div className="l" style={{cursor:'pointer'}} onClick={()=>abrir('prestamo',{p})}><div className="t">{p.persona}</div>
+        <div className="s">Prestado {$(p.monto)} el {fC(p.fecha)}{p.dev?` · devolvió ${$(p.dev)}`:''}{p.fechaDevolucion&&p.pen>0?` · devuelve ${fC(p.fechaDevolucion)}`:''}{p.fechaDevolucion&&p.pen>0&&p.fechaDevolucion<hoyStr()?' (atrasado)':''}</div></div>
+      {p.pen>0?<><span className="amt">{$(p.pen)}</span><button className="btn sm" onClick={()=>abrir('devolucion',{p})}>Devolvió</button></>:<span className="chip" style={{background:'var(--pos-bg)',color:'var(--pos)'}}>saldado</span>}
+    </div>)}
+    {!lista.length&&<div className="empty">No prestaste plata todavía.</div>}
+    <button className="btn sm" style={{marginTop:8}} onClick={()=>abrir('prestamo')}>+ Prestar plata</button>
+  </div>;
 }
 
 const TIPOS_ING=['Sueldo','Evento musical','Bono trabajo','Ingreso extra'];
@@ -554,7 +623,7 @@ function FormTransfer({db,save,onClose}){
       <F label="Hacia"><SelMedio db={db} soloCuentas value={v.a} onChange={x=>setV({...v,a:x})} /></F></div>
     <label className="check"><input type="checkbox" checked={v.ahorro} onChange={e=>setV({...v,ahorro:e.target.checked})} /> Es plata del ahorro (se mueve también el apartado)</label>
     <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
-    <div className="muted">Las transferencias no cuentan como ingreso ni como gasto.</div>
+    <div className="muted">Las transferencias no cuentan como ingreso ni como egreso.</div>
     <button className="btn pri" onClick={ok}>Transferir</button>
   </div></Sheet>;
 }
@@ -690,6 +759,8 @@ function Inicio({db,save,abrir}){
   // esperados vencidos
   db.esperados.filter(e=>!e.hecho&&e.fecha<=hoy).forEach(e=>alerts.push({k:e.id,cls:'i',h:`${e.tipo==='ingreso'?'¿Cobraste':'¿Pagaste'} ${e.desc}?`,b:`${$(e.monto)} previsto para el ${fL(e.fecha)}${e.tentativo?' (a confirmar)':''}.`,
     acc:[[e.tipo==='ingreso'?'Registrar cobro':'Registrar pago',()=>abrir(e.tipo==='ingreso'?'ingreso':'pagoUnico',{inicial:e.tipo==='ingreso'?{monto:e.monto,subtipo:e.subtipo,desc:e.desc,cuenta:e.cuenta,ahorro:e.ahorro,esperado:e.id}:e})],['Cambiar fecha',()=>abrir('esperado',{e})]]}));
+  // devoluciones atrasadas
+  (db.prestamos||[]).filter(p=>p.fechaDevolucion&&p.fechaDevolucion<=hoy&&pendientePrestamo(db,p)>0).forEach(p=>alerts.push({k:'pr'+p.id,cls:'i',h:`¿${p.persona} te devolvió la plata?`,b:`Te debe ${$(pendientePrestamo(db,p))}, quedó en devolver el ${fL(p.fechaDevolucion)}.`,acc:[['Registrar devolución',()=>abrir('devolucion',{p})],['Cambiar fecha',()=>abrir('prestamo',{p})]]}));
   // actualizaciones de alquiler
   db.recurrentes.filter(r=>r.actualizaMeses&&r.ultimaActualizacion).forEach(r=>{ const prox=addM(r.ultimaActualizacion,r.actualizaMeses); const dd=diffD(hoy,prox);
     if(dd<=10) alerts.push({k:'act'+r.id,cls:'w',h:`${r.nombre}: actualización ${dd<0?'pendiente':`en ${dd} días`}`,b:`Toca el aumento trimestral (${fC(prox)}). Cargá el nuevo valor en Recurrentes cuando lo sepas.`,acc:[['Cargar nuevo valor',()=>abrir('rec',{r})]]}); });
@@ -707,10 +778,10 @@ function Inicio({db,save,abrir}){
       <div className="total">{$(total)}</div>
       <div className="split" aria-hidden="true">{db.cuentas.map((c,i)=><span key={c.id} style={{width:(pos[i]/sp*100)+'%',background:c.color}}></span>)}</div>
       <div className="accs">{db.cuentas.map(c=><div key={c.id} className="acc"><div className="n"><span className="dot" style={{background:c.color}}></span>{c.nombre}</div><div className="v">{$(s[c.id])}</div>{ah[c.id]>0&&<div className="mini" style={{color:'inherit',opacity:.7}}>ahorro {$(ah[c.id])}</div>}</div>)}</div>
-      <div className="sub"><span>Ahorro apartado {$(ahorro)}</span><span>Deuda tarjetas {$(deuda)}</span></div>
+      <div className="sub"><span>Ahorro apartado {$(ahorro)}</span>{totalTeDeben(db)>0&&<span>Te deben {$(totalTeDeben(db))}</span>}<span>Deuda tarjetas {$(deuda)}</span></div>
     </div>
     <div className="fab">
-      <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Gasto</button>
+      <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Egreso</button>
       <button onClick={()=>abrir('ingreso')}><span className="ic">➕</span>Ingreso</button>
       <button onClick={()=>abrir('transfer')}><span className="ic">⇄</span>Transferir</button>
       <button onClick={()=>abrir('ahorro')}><span className="ic">🐷</span>Ahorro</button>
@@ -724,6 +795,7 @@ function Inicio({db,save,abrir}){
     {alerts.length>0&&<div className="card"><h2>Avisos</h2>
       {alerts.map(a=><div key={a.k} className={'alert '+a.cls}><div className="h">{a.h}</div><div className="b">{a.b}</div>{a.acc&&<div className="btns" style={{marginTop:8}}>{a.acc.map(([l,fn])=><button key={l} className="btn sm" onClick={fn}>{l}</button>)}</div>}</div>)}
     </div>}
+    <Prestamos db={db} abrir={abrir} />
     <MetaAhorro db={db} ahorro={ahorro} />
   </div>;
 }
@@ -788,7 +860,7 @@ function FormRec({db,save,onClose,r}){
       <F label="Rige desde"><input type="date" value={v.desde} onChange={x=>setV({...v,desde:x.target.value})} /></F></div>
     {(ed.montos||[]).length>1&&<div className="mini">Historial: {ed.montos.map(x=>`${$(x.monto)} desde ${fC(x.desde)}`).join(' · ')}</div>}
     {!pres&&<>
-      {!r&&<F label="Tipo"><div className="seg"><button className={v.tipo==='gasto'?'on':''} onClick={()=>setV({...v,tipo:'gasto'})}>Gasto</button><button className={v.tipo==='ingreso'?'on':''} onClick={()=>setV({...v,tipo:'ingreso'})}>Ingreso</button></div></F>}
+      {!r&&<F label="Tipo"><div className="seg"><button className={v.tipo==='gasto'?'on':''} onClick={()=>setV({...v,tipo:'gasto'})}>Egreso</button><button className={v.tipo==='ingreso'?'on':''} onClick={()=>setV({...v,tipo:'ingreso'})}>Ingreso</button></div></F>}
       <F label="Frecuencia"><div className="seg">{[['semanal','Cada viernes'],['quincenal','Cada 2 viernes'],['mensual','Mensual']].map(([k,l])=><button key={k} className={v.frec===k?'on':''} onClick={()=>setV({...v,frec:k})}>{l}</button>)}</div></F>
       {v.frec==='mensual'&&<div className="two"><F label="Vence el día"><input inputMode="numeric" value={v.dia} onChange={x=>setV({...v,dia:x.target.value})} /></F>
         <label className="check" style={{marginTop:22}}><input type="checkbox" checked={v.pagoViernes} onChange={x=>setV({...v,pagoViernes:x.target.checked})} /> Pagar el viernes anterior</label></div>}
@@ -823,25 +895,27 @@ function Movimientos({db,save,abrir}){
    .sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const grupos={}; lista.forEach(m=>{const w=viernesDe(m.fecha);(grupos[w]=grupos[w]||[]).push(m);});
   const signo=m=>m.tipo==='ingreso'||m.tipo==='reintegro'||(m.tipo==='ajuste'&&m.monto>0)?1:(m.tipo==='transfer'||m.tipo==='apartar'||m.tipo==='liberar')?0:-1;
-  const editar=m=>{ if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
+  const editar=m=>{ if(m.prestamoId){ const p=(db.prestamos||[]).find(x=>x.id===m.prestamoId); if(m.tipo==='gasto'&&p) return abrir('prestamo',{p}); if(confirm('¿Eliminar esta devolución?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); return; }
+    if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
     else if(m.tipo==='gasto') abrir('gasto',{inicial:{kind:'mov',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.cuenta,fecha:m.fecha}});
     else if(m.tipo==='ingreso') abrir('ingreso',{inicial:m});
     else if(confirm('¿Eliminar este movimiento?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); };
   return <div>
     <div className="fab">
-      <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Gasto</button>
+      <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Egreso</button>
       <button onClick={()=>abrir('ingreso')}><span className="ic">➕</span>Ingreso</button>
       <button onClick={()=>abrir('transfer')}><span className="ic">⇄</span>Transferir</button>
       <button onClick={()=>abrir('ahorro')}><span className="ic">🐷</span>Ahorro</button>
     </div>
-    <div className="seg tabs-sub">{[['todos','Todos'],['gastos','Gastos'],['ingresos','Ingresos'],['otros','Movimientos']].map(([k,l])=><button key={k} className={filtro===k?'on':''} onClick={()=>setFiltro(k)}>{l}</button>)}</div>
-    {!lista.length&&<div className="card"><div className="empty">Todavía no hay movimientos. Cargá el primer gasto con el botón de arriba.</div></div>}
+    <div className="seg tabs-sub">{[['todos','Todos'],['gastos','Egresos'],['ingresos','Ingresos'],['otros','Movimientos']].map(([k,l])=><button key={k} className={filtro===k?'on':''} onClick={()=>setFiltro(k)}>{l}</button>)}</div>
+    <Prestamos db={db} abrir={abrir} todos />
+    {!lista.length&&<div className="card"><div className="empty">Todavía no hay movimientos. Cargá el primer egreso con el botón de arriba.</div></div>}
     {Object.entries(grupos).sort((a,b)=>b[0].localeCompare(a[0])).map(([w,ms])=><div className="card" key={w}>
       <h2>Semana del vie {fC(w)} <span className="muted">{$(ms.reduce((a,m)=>a+signo(m)*m.monto,0))}</span></h2>
       {ms.map(m=><div className="row" key={m.kind+m.id} onClick={()=>editar(m)} style={{cursor:'pointer'}}>
         <div className="l"><div className="t">{m.desc}</div>
           <div className="s">{fL(m.fecha)} · {m.tipo==='transfer'?`${nombreMedio(db,m.cuenta)} → ${nombreMedio(db,m.cuentaDestino)}`:nombreMedio(db,m.medio||m.cuenta)}{m.cuotas>1?` · ${m.cuotas} cuotas`:''}{m.cat?` · ${m.cat}`:''}</div>
-          <div>{m.ahorro&&<span className="chip aho">ahorro</span>} {m.tercero&&<span className="chip">de terceros</span>} {m.auto&&<span className="chip">automático</span>}</div></div>
+          <div>{m.ahorro&&<span className="chip aho">ahorro</span>} {m.prestamoId&&<span className="chip">{m.tipo==='gasto'?'préstamo':'devolución'}</span>} {m.tercero&&<span className="chip">de terceros</span>} {m.auto&&<span className="chip">automático</span>}</div></div>
         <span className={'amt '+(signo(m)>0?'pos':signo(m)<0?'':'muted')}>{signo(m)>0?'+':signo(m)<0?'−':''}{$(Math.abs(m.monto))}</span>
       </div>)}
     </div>)}
@@ -907,7 +981,8 @@ function Cashflow({db}){
     ['Fijos','fijos',c=>c.det.fijos,-1],
     ['Pagos únicos','unicos',c=>c.det.unicos,-1],
     ['Comida y varios','presup',c=>[...c.det.presup],-1],
-    ['Gastos registrados','reales',c=>c.det.gastosReales,-1],
+    ['Egresos registrados','reales',c=>c.det.gastosReales,-1],
+    ['Préstamos','prestamos',c=>c.det.prestamos,-1],
     ['Compras con tarjeta','tarjeta',c=>c.det.tarjeta,-1],
   ];
   const celda=(v,items,titulo,sign)=>{ const has=items&&items.length; const t=items?.some(x=>x.tentativo||x.estimado);
@@ -928,8 +1003,8 @@ function Cashflow({db}){
     <div className="card" style={{marginTop:12}}>
       <h2>Cómo leerlo</h2>
       <div className="muted" style={{fontSize:13}}>
-        <p><b>Balance sem.:</b> ingresos menos egresos de la semana. Las compras con tarjeta cuentan la semana en que comprás.</p>
-        <p style={{marginTop:6}}><b>Pago de resúmenes:</b> plata que sale de la cuenta para pagar la tarjeta. No es gasto nuevo: baja la deuda.</p>
+        <p><b>Balance sem.:</b> ingresos menos egresos de la semana (los préstamos que das cuentan como egreso y las devoluciones como ingreso). Las compras con tarjeta cuentan la semana en que comprás.</p>
+        <p style={{marginTop:6}}><b>Pago de resúmenes:</b> plata que sale de la cuenta para pagar la tarjeta. No es un egreso nuevo: baja la deuda.</p>
         <p style={{marginTop:6}}><b>Proyectado:</b> lo que vas a tener en las cuentas al jueves. Se compara con el <b>Real</b>. Un "!" avisa que alguna cuenta queda en negativo aunque el total no.</p>
       </div></div>
     {det&&<Sheet title={det.titulo} onClose={()=>setDet(null)}>
@@ -945,7 +1020,7 @@ function Recurrentes({db,save,abrir}){
   const hoy=hoyStr();
   const prox=rec=>{ if(rec.tipo==='presupuesto') return 'cada semana'; const o=ocurrencias(db,hoy,addD(hoy,70)).filter(x=>x.rec.id===rec.id&&x.estado==='pendiente')[0]; return o?`próximo ${fL(o.fecha)}`:''; };
   const desc=r=>{ if(r.tipo==='presupuesto') return `tope semanal${r.compensa?', compensa excesos':''}`; const f=r.frec==='semanal'?'cada viernes':r.frec==='quincenal'?'cada 2 viernes':`día ${r.dia}${r.pagoViernes?', se paga el viernes anterior':''}`; return `${f} · ${nombreMedio(db,r.medio)}${r.tipo==='gasto'&&r.estim==='ultimo'?' · aprox., último pagado':''}`; };
-  const grupos=[['Ingresos',r=>r.tipo==='ingreso'],['Vivienda',r=>r.grupo==='vivienda'],['Presupuestos semanales',r=>r.tipo==='presupuesto'],['Otros gastos',r=>r.tipo==='gasto'&&r.grupo!=='vivienda']];
+  const grupos=[['Ingresos',r=>r.tipo==='ingreso'],['Vivienda',r=>r.grupo==='vivienda'],['Presupuestos semanales',r=>r.tipo==='presupuesto'],['Otros egresos',r=>r.tipo==='gasto'&&r.grupo!=='vivienda']];
   const sueldo=db.recurrentes.find(r=>r.id==='sueldo');
   const prSueldo=sueldo?ocurrencias(db,hoy,addD(hoy,35)).filter(o=>o.rec.id==='sueldo'&&o.estado==='pendiente'):[];
   return <div>
@@ -967,12 +1042,14 @@ function Recurrentes({db,save,abrir}){
 }
 
 // ================= CONFIG =================
-function Config({db,save,abrir,setDb}){
+function Config({db,save,abrir,setDb,nubeProps}){
   const fileRef=useRef();
   const [fer,setFer]=useState('');
   const [cat,setCat]=useState('');
   const exportar=(data,nombre)=>{ const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=nombre; document.body.appendChild(a); a.click(); a.remove(); };
   return <div>
+    <SeccionNube {...nubeProps} />
+    <SeccionInstalar />
     <div className="card"><h2>Saldos</h2><div className="muted" style={{marginBottom:8}}>Si la app no coincide con tus cuentas, ajustalo acá.</div><button className="btn" onClick={()=>abrir('ajuste')}>Ajustar saldos reales</button></div>
     <div className="card"><h2>Ahorro</h2>
       <div className="row"><span className="l">Meta del fondo de emergencia</span><input style={{width:130,textAlign:'right',padding:'6px 8px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}} inputMode="numeric" value={db.metaAhorro} onChange={e=>save({...db,metaAhorro:num(e.target.value)})} /></div>
@@ -987,15 +1064,57 @@ function Config({db,save,abrir,setDb}){
     <div className="card"><h2>Respaldo</h2><div className="muted" style={{marginBottom:8}}>Los datos se guardan en este navegador. Para pasarlos a otro dispositivo, exportá acá e importá allá.</div>
       <div className="btns"><button className="btn" onClick={()=>exportar(db,`finanzas_jorge_${hoyStr()}.json`)}>Exportar</button>
         <button className="btn" onClick={()=>fileRef.current.click()}>Importar</button>
-        <input ref={fileRef} type="file" accept=".json" style={{display:'none'}} onChange={e=>{const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=ev=>{try{const d=JSON.parse(ev.target.result); if(d.version!==13) return alert('Ese archivo es de otra versión de la app.'); setDb(d); alert('Datos importados.');}catch{alert('El archivo no se pudo leer.');}}; r.readAsText(f); e.target.value='';}} /></div></div>
+        <input ref={fileRef} type="file" accept=".json" style={{display:'none'}} onChange={e=>{const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=ev=>{try{const d=JSON.parse(ev.target.result); if(d.version!==13) return alert('Ese archivo es de otra versión de la app.'); setDb(migrar(d)); alert('Datos importados.');}catch{alert('El archivo no se pudo leer.');}}; r.readAsText(f); e.target.value='';}} /></div></div>
     <div className="card"><h2>Empezar de nuevo</h2><div className="muted" style={{marginBottom:8}}>Vuelve a los datos del 20/10 (saldos, tarjetas y recurrentes del plan). Antes descarga un respaldo.</div>
       <button className="btn danger" onClick={()=>{if(!confirm('¿Borrar todo y volver a los datos iniciales?')) return; exportar(db,`finanzas_respaldo_${hoyStr()}.json`); setDb(autoRegistrar(datosIniciales()));}}>Restablecer</button></div>
   </div>;
 }
 
+// ================= NUBE (Google Drive vía Apps Script) =================
+const NUBE_KEY='jorge-finanzas-nube';
+function leerNube(){ try{ return JSON.parse(localStorage.getItem(NUBE_KEY))||{}; }catch(e){ return {}; } }
+function escribirNube(n){ try{ localStorage.setItem(NUBE_KEY,JSON.stringify(n)); }catch(e){} }
+async function llamarNube(url,body){
+  const r=await fetch(url,{method:'POST',body:JSON.stringify(body)});
+  const txt=await r.text(); try{ return JSON.parse(txt); }catch(e){ return {ok:false,error:'La URL no responde como la app web de Apps Script. Revisá que sea la URL que termina en /exec.'}; }
+}
+// Instalación como app
+let eventoInstalar=null;
+window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); eventoInstalar=e; window.dispatchEvent(new Event('puede-instalar')); });
+const esInstalada=()=>window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true;
+
+function SeccionNube({nube,sync,conectar,desconectar,subir,bajar}){
+  const [v,setV]=useState({url:nube.url||'',token:nube.token||''});
+  const estado={off:'Sin conectar',ok:'Sincronizado',guardando:'Guardando…',error:'Error',conflicto:'Hay cambios en otro dispositivo'}[sync.estado]||'';
+  return <div className="card"><h2>Sincronizar con Google Drive <span className={'sync '+(sync.estado==='ok'?'ok':sync.estado==='error'?'err':sync.estado==='conflicto'?'conf':'')}>{estado}</span></h2>
+    <div className="muted" style={{marginBottom:8}}>Los datos se guardan en un archivo de tu Drive y se ven iguales en el celular y en la compu. Este dispositivo igual guarda una copia por si no hay conexión.</div>
+    {nube.url?<>
+      <div className="row"><span className="l">Último guardado en la nube</span><span className="muted">{nube.ultima?new Date(nube.ultima).toLocaleString('es-AR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'—'}</span></div>
+      {sync.msg&&<div className="alert d" style={{marginTop:8}}><div className="b">{sync.msg}</div></div>}
+      <div className="btns" style={{marginTop:8}}><button className="btn" onClick={()=>subir(false)}>Guardar ahora</button><button className="btn" onClick={bajar}>Traer de la nube</button><button className="btn danger" onClick={desconectar}>Desconectar</button></div>
+    </>:<div className="form">
+      <F label="URL de la app web (termina en /exec)"><input value={v.url} onChange={e=>setV({...v,url:e.target.value.trim()})} placeholder="https://script.google.com/macros/s/.../exec" /></F>
+      <F label="Clave"><input value={v.token} onChange={e=>setV({...v,token:e.target.value.trim()})} placeholder="La que aparece en la planilla, hoja Conexión" /></F>
+      <button className="btn pri" onClick={()=>{ if(v.url.startsWith('https://script.google.com/')&&v.token) conectar(v.url,v.token); else alert('Revisá la URL (tiene que empezar con https://script.google.com/) y la clave.'); }}>Conectar</button>
+    </div>}
+  </div>;
+}
+function SeccionInstalar(){
+  const [puede,setPuede]=useState(!!eventoInstalar);
+  useEffect(()=>{ const f=()=>setPuede(true); window.addEventListener('puede-instalar',f); return ()=>window.removeEventListener('puede-instalar',f); },[]);
+  const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  return <div className="card"><h2>App en el celular</h2>
+    {esInstalada()?<div className="muted">Ya la estás usando como app instalada.</div>:
+     puede?<><div className="muted" style={{marginBottom:8}}>Instalala para abrirla desde un ícono, a pantalla completa.</div><button className="btn pri" onClick={async()=>{ eventoInstalar.prompt(); await eventoInstalar.userChoice; eventoInstalar=null; setPuede(false); }}>Instalar app</button></>:
+     ios?<div className="muted">En Safari tocá el botón Compartir y elegí <b>Agregar a inicio</b>.</div>:
+     <div className="muted">En Chrome abrí el menú ⋮ y elegí <b>Instalar app</b> o <b>Agregar a la pantalla principal</b>.</div>}
+  </div>;
+}
+
 // ================= APP =================
 const TABS=[['inicio','Inicio','🏠'],['movs','Movimientos','📝'],['tarjetas','Tarjetas','💳'],['cash','Cashflow','📊'],['rec','Recurrentes','🔁'],['config','Ajustes','⚙️']];
-function cargar(){ try{ const d=JSON.parse(localStorage.getItem(STORAGE_KEY)); if(d&&d.version===13) return d; }catch(e){} return null; }
+function migrar(d){ if(!d) return d; return {...d, prestamos:d.prestamos||[]}; }
+function cargar(){ try{ const d=JSON.parse(localStorage.getItem(STORAGE_KEY)); if(d&&d.version===13) return migrar(d); }catch(e){} return null; }
 function App(){
   const [db,setDbRaw]=useState(()=>autoRegistrar(cargar()||datosIniciales()));
   const [tab,setTab]=useState('inicio');
@@ -1003,22 +1122,56 @@ function App(){
   const [viejo,setViejo]=useState(()=>{ try{ return !!localStorage.getItem(OLD_KEY)&&!localStorage.getItem(OLD_KEY+'-respaldado'); }catch(e){ return false; } });
   const setDb=d=>setDbRaw(d);
   const save=d=>setDbRaw(autoRegistrar(d));
-  useEffect(()=>{ try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(db)); }catch(e){} },[db]);
+  const [nube,setNube]=useState(leerNube);
+  const [sync,setSync]=useState(()=>({estado:leerNube().url?'ok':'off'}));
+  const nubeRef=useRef(nube); const dbRef=useRef(db); dbRef.current=db;
+  const deRemoto=useRef(false); const montado=useRef(false); const timer=useRef(null); const enCurso=useRef(false);
+  const actNube=p=>{ const n={...nubeRef.current,...p}; nubeRef.current=n; escribirNube(n); setNube(n); };
+  const aplicarRemoto=r=>{ deRemoto.current=true; setDbRaw(autoRegistrar(migrar(r.data))); actNube({rev:r.rev,dirty:false,ultima:r.updatedAt||new Date().toISOString()}); setSync({estado:'ok'}); };
+  const subir=async(force=false)=>{
+    const n=nubeRef.current; if(!n.url||!n.token) return; if(enCurso.current){ clearTimeout(timer.current); timer.current=setTimeout(()=>subir(force),1500); return; }
+    enCurso.current=true; setSync({estado:'guardando'});
+    try{ const r=await llamarNube(n.url,{action:'save',token:n.token,baseRev:n.rev||0,force,data:dbRef.current});
+      if(r.ok){ actNube({rev:r.rev,dirty:false,ultima:new Date().toISOString()}); setSync({estado:'ok'}); }
+      else if(r.conflict) setSync({estado:'conflicto',remoto:r});
+      else setSync({estado:'error',msg:r.error||'No se pudo guardar en la nube.'}); }
+    catch(e){ setSync({estado:'error',msg:'Sin conexión. Los cambios quedan en este dispositivo y se suben cuando vuelva.'}); }
+    enCurso.current=false; };
+  const bajar=async()=>{
+    const n=nubeRef.current; if(!n.url||!n.token) return;
+    try{ const r=await llamarNube(n.url,{action:'load',token:n.token});
+      if(!r.ok){ setSync({estado:'error',msg:r.error||'No se pudo leer la nube.'}); return; }
+      if(!r.data){ subir(true); return; }
+      if((r.rev||0)>(n.rev||0)){ if(n.dirty) setSync({estado:'conflicto',remoto:r}); else aplicarRemoto(r); }
+      else { setSync({estado:'ok'}); if(n.dirty) subir(); } }
+    catch(e){ setSync({estado:'error',msg:'Sin conexión. Se usa la copia de este dispositivo.'}); } };
+  const conectar=(url,token)=>{ actNube({url,token,rev:0,dirty:true}); setSync({estado:'guardando'}); bajar(); };
+  const desconectar=()=>{ if(!confirm('¿Desconectar la sincronización? Los datos quedan en este dispositivo y en tu Drive.')) return; nubeRef.current={}; escribirNube({}); setNube({}); setSync({estado:'off'}); };
+  useEffect(()=>{
+    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(db)); }catch(e){}
+    if(!montado.current){ montado.current=true; return; }
+    if(deRemoto.current){ deRemoto.current=false; return; }
+    if(!nubeRef.current.url) return;
+    actNube({dirty:true}); clearTimeout(timer.current); timer.current=setTimeout(()=>subir(),2000);
+  },[db]);
+  useEffect(()=>{ if(nubeRef.current.url) bajar(); const v=()=>{ if(document.visibilityState==='visible'&&nubeRef.current.url) bajar(); }; const on=()=>{ if(nubeRef.current.url) bajar(); }; document.addEventListener('visibilitychange',v); window.addEventListener('online',on); return ()=>{document.removeEventListener('visibilitychange',v);window.removeEventListener('online',on);}; },[]);
   useEffect(()=>{ const t=setInterval(()=>setDbRaw(d=>autoRegistrar(d)),60*60*1000); const v=()=>{ if(document.visibilityState==='visible') setDbRaw(d=>autoRegistrar(d)); }; document.addEventListener('visibilitychange',v); return ()=>{clearInterval(t);document.removeEventListener('visibilitychange',v);}; },[]);
   useEffect(()=>{ window.scrollTo(0,0); },[tab]);
   const abrir=(tipo,props={})=>setModal({tipo,props});
   const cerrar=()=>setModal(null);
-  const mp={db,save,onClose:cerrar,...(modal?.props||{})};
+  const mp={db,save,onClose:cerrar,abrir,...(modal?.props||{})};
   const respaldoViejo=()=>{ try{ const raw=localStorage.getItem(OLD_KEY); const b=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=`finanzas_version_anterior_${hoyStr()}.json`; document.body.appendChild(a); a.click(); a.remove(); localStorage.setItem(OLD_KEY+'-respaldado','1'); }catch(e){} setViejo(false); };
   return <div className="app">
-    <div className="top"><h1>Mis finanzas</h1><span className="fecha">{fL(hoyStr())}</span></div>
+    <div className="top"><h1>Mis finanzas</h1><span style={{display:'flex',gap:8,alignItems:'center'}}>{sync.estado!=='off'&&<button className={'sync '+(sync.estado==='ok'?'ok':sync.estado==='error'?'err':sync.estado==='conflicto'?'conf':'')} onClick={()=>setTab('config')}>{sync.estado==='ok'?'☁︎ al día':sync.estado==='guardando'?'☁︎ guardando…':sync.estado==='conflicto'?'⚠ revisar':'⚠ sin nube'}</button>}<span className="fecha">{fL(hoyStr())}</span></span></div>
+    {sync.estado==='conflicto'&&<div className="alert w"><div className="h">Hay cambios hechos en otro dispositivo</div><div className="b">La nube tiene datos más nuevos{sync.remoto?.updatedAt?` (del ${new Date(sync.remoto.updatedAt).toLocaleString('es-AR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})})`:''} y en este dispositivo también hay cambios sin subir. Elegí con cuáles te quedás.</div>
+      <div className="btns" style={{marginTop:8}}><button className="btn sm pri" onClick={()=>aplicarRemoto(sync.remoto)}>Usar los de la nube</button><button className="btn sm" onClick={()=>subir(true)}>Quedarme con los de acá</button></div></div>}
     {viejo&&<div className="alert i"><div className="h">Datos de la versión anterior</div><div className="b">Esta versión arranca limpia desde el 20/10. Descargá el respaldo de los datos viejos por si alguna vez los necesitás.</div><div className="btns" style={{marginTop:8}}><button className="btn sm" onClick={respaldoViejo}>Descargar respaldo</button><button className="btn sm ghost" onClick={()=>{try{localStorage.setItem(OLD_KEY+'-respaldado','1');}catch(e){} setViejo(false);}}>No hace falta</button></div></div>}
     {tab==='inicio'&&<Inicio db={db} save={save} abrir={abrir} />}
     {tab==='movs'&&<Movimientos db={db} save={save} abrir={abrir} />}
     {tab==='tarjetas'&&<Tarjetas db={db} save={save} abrir={abrir} />}
     {tab==='cash'&&<Cashflow db={db} />}
     {tab==='rec'&&<Recurrentes db={db} save={save} abrir={abrir} />}
-    {tab==='config'&&<Config db={db} save={save} abrir={abrir} setDb={d=>setDbRaw(autoRegistrar(d))} />}
+    {tab==='config'&&<Config db={db} save={save} abrir={abrir} setDb={d=>setDbRaw(autoRegistrar(d))} nubeProps={{nube,sync,conectar,desconectar,subir,bajar}} />}
     {modal?.tipo==='gasto'&&<FormGasto {...mp} />}
     {modal?.tipo==='ingreso'&&<FormIngreso {...mp} />}
     {modal?.tipo==='transfer'&&<FormTransfer {...mp} />}
@@ -1031,10 +1184,13 @@ function App(){
     {modal?.tipo==='esperado'&&<FormEsperado {...mp} />}
     {modal?.tipo==='rec'&&<FormRec {...mp} />}
     {modal?.tipo==='ajuste'&&<FormAjuste {...mp} />}
+    {modal?.tipo==='prestamo'&&<FormPrestamo {...mp} />}
+    {modal?.tipo==='devolucion'&&<FormDevolucion {...mp} />}
     <nav className="nav"><div className="in">{TABS.map(([k,l,ic])=><button key={k} className={tab===k?'on':''} onClick={()=>setTab(k)} aria-current={tab===k?'page':undefined}><span className="ic">{ic}</span>{l}</button>)}</div></nav>
   </div>;
 }
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
 </html>
