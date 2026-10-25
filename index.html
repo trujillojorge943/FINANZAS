@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="JENT Finanzas">
 <title>JENT Finanzas</title>
-<!-- v17: dólar BNA, resúmenes en pesos y dólares, deshacer PDF -->
+<!-- v17.1: ahorros en línea compacta con historial -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -78,6 +78,9 @@ button{cursor:pointer}
 .caja{border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:8px}
 .caja .top2{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .caja .val{font-size:22px;font-weight:800}
+.cajas-line{display:flex;gap:8px;margin-bottom:12px}
+.cajas-line button{flex:1;display:flex;justify-content:space-between;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 12px;font-size:13px;text-align:left}
+.cajas-line b{font-size:15px}
 .acc{background:rgba(255,255,255,.07);border-radius:12px;padding:8px 10px}
 .acc .n{font-size:11px;opacity:.75;display:flex;align-items:center}
 .acc .v{font-weight:700;font-size:14px}
@@ -713,6 +716,19 @@ function FormTransfer({db,save,onClose}){
   </div></Sheet>;
 }
 
+function HistorialCaja({db,c,save}){
+  const ms=db.movs.filter(m=>m.caja===c.id&&(m.tipo==='aporte'||m.tipo==='retiro')).sort((a,b)=>b.fecha.localeCompare(a.fecha)||(b.ts||0)-(a.ts||0));
+  if(!ms.length) return <div className="empty">Todavía no hay movimientos en esta caja.</div>;
+  return <div style={{marginTop:4}}><div style={{fontWeight:700,fontSize:13,marginBottom:4}}>Historial</div>
+    {c.valorFecha&&<div className="mini" style={{marginBottom:4}}>Valor actualizado a mano el {fL(c.valorFecha)}.</div>}
+    {ms.slice(0,30).map(m=><div className="row" key={m.id}>
+      <div className="l"><div style={{fontSize:13}}>{m.tipo==='aporte'?'Aporte':'Retiro'}{m.motivo?` · ${m.motivo}`:''}</div><div className="s">{fL(m.fecha)} · {m.tipo==='aporte'?'desde':'a'} {nombreMedio(db,m.cuenta)}</div></div>
+      <span className={'amt '+(m.tipo==='aporte'?'pos':'neg')} style={{fontSize:13}}>{m.tipo==='aporte'?'+':'−'}{$(m.monto)}</span>
+      <button className="btn sm ghost" aria-label="Eliminar" onClick={()=>{ if(confirm(`¿Eliminar este ${m.tipo}? La plata vuelve ${m.tipo==='aporte'?'a la cuenta':'a la caja'}.`)) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); }}>🗑</button>
+    </div>)}
+  </div>;
+}
+
 function FormCaja({db,save,onClose,cajaId,accion:acc0,monto:monto0,desc:desc0,semana}){
   const [cid,setCid]=useState(cajaId||'ahorro');
   const c=(db.cajas||[]).find(x=>x.id===cid)||db.cajas[0];
@@ -764,6 +780,7 @@ function FormCaja({db,save,onClose,cajaId,accion:acc0,monto:monto0,desc:desc0,se
       <F label="Valor actual"><MontoInput value={v.valor} onChange={x=>setV({...v,valor:x})} /></F></>}
     <F label="Nombre de la caja"><input value={v.nombre} onChange={e=>setV({...v,nombre:e.target.value})} /></F>
     <button className="btn pri" onClick={ok}>{v.accion==='aportar'?'Registrar aporte':v.accion==='retirar'?'Registrar retiro':'Guardar valor'}</button>
+    <HistorialCaja db={db} c={c} save={save} />
   </div></Sheet>;
 }
 
@@ -1201,16 +1218,12 @@ function Inicio({db,save,abrir}){
   </div>;
 }
 function Cajas({db,abrir}){
-  return <div className="card"><h2>Ahorros <span className="muted">{$(totalCajas(db))}</span></h2>
-    {(db.cajas||[]).map(c=>{ const st=estadoCaja(db,c); return <div key={c.id} className="caja" onClick={()=>abrir('ahorro',{cajaId:c.id})} style={{cursor:'pointer'}}>
-      <div className="top2"><b>{c.nombre}</b><span className="val" style={{color:c.color}}>{$(st.valor)}</span></div>
-      <div className="barline"><span>{c.tipo==='jubilacion'?`${c.pct}% del sueldo cada semana`:c.montoSemanal?`${$(c.montoSemanal)} por semana`:'Sin aporte fijo'}</span>
-        <span className={st.rendimiento>=0?'pos':'neg'}>{st.rendimiento?`${$s(st.rendimiento)} (${st.rendPct.toFixed(1)}%)`:''}</span></div>
-      {c.valorFecha&&<div className="mini">Valor actualizado el {fL(c.valorFecha)}</div>}
-      {c.tipo==='jubilacion'&&c.reponer>0&&<div className="mini warn">Falta reponer {$(c.reponer)}</div>}
-    </div>; })}
-    <div className="mini">Tocá una caja para aportar, retirar o actualizar su valor.</div>
-  </div>;
+  const ic={ahorro:'🐷',jubilacion:'🏖'};
+  return <div className="cajas-line">{(db.cajas||[]).map(c=>{ const st=estadoCaja(db,c);
+    return <button key={c.id} onClick={()=>abrir('ahorro',{cajaId:c.id})} aria-label={`${c.nombre}: ${$(st.valor)}`}>
+      <span>{ic[c.tipo]||'💰'} {c.nombre}{c.tipo==='jubilacion'&&c.reponer>0&&<span className="warn"> ·</span>}</span>
+      <span style={{textAlign:'right'}}><b style={{color:c.color}}>{$(st.valor)}</b>{c.valor!=null&&st.neto>0&&<div className={'mini '+(st.rendimiento>=0?'pos':'neg')}>{st.rendimiento>=0?'+':''}{st.rendPct.toFixed(1).replace('.',',')}%</div>}</span>
+    </button>; })}</div>;
 }
 function cuotasComprometidas(db,n=6){
   const hoy=hoyStr(); const meses={};
