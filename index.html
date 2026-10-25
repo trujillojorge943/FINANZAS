@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Finanzas">
 <title>Mis Finanzas — Jorge</title>
-<!-- v15: resumen en PDF, sueldo con confirmación y adelantos, tema claro/oscuro -->
+<!-- v16: cajas de ahorro y jubilación, efectivo -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -23,7 +23,7 @@
   --bg:#E8ECEF; --surface:#FFFFFF; --surface2:#F3F5F7; --line:#D9DEE3;
   --ink:#16233A; --ink2:#55627A; --ink3:#8B95A7;
   --pos:#0E7A5A; --pos-bg:#E3F3EC; --neg:#B3261E; --neg-bg:#FBE7E5; --warn:#9A6200; --warn-bg:#FBF0D9;
-  --bbva:#1464A5; --nx:#EF6A24; --mp:#009EE3; --ahorro:#6B4FBB;
+  --bbva:#1464A5; --nx:#EF6A24; --mp:#009EE3; --ef:#2F8F5B; --ahorro:#6B4FBB; --jubi:#0F6E78;
   --r-lg:18px; --r:12px; --r-sm:8px;
   color-scheme:light;
 }
@@ -31,7 +31,7 @@
     --bg:#0F1724; --surface:#18233A; --surface2:#1F2C46; --line:#2C3A57;
     --ink:#E9EEF6; --ink2:#AAB5C8; --ink3:#77839A;
     --pos:#43C59A; --pos-bg:#123A30; --neg:#F07A70; --neg-bg:#3D1C1C; --warn:#F0B94D; --warn-bg:#3A2E12;
-    --bbva:#5BA4E6; --nx:#FF8A4C; --mp:#4CC3F2; --ahorro:#A08BEA;
+    --bbva:#5BA4E6; --nx:#FF8A4C; --mp:#4CC3F2; --ef:#5CC48A; --ahorro:#A08BEA; --jubi:#4FC1CC;
     color-scheme:dark;
   }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -71,7 +71,11 @@ button{cursor:pointer}
 .hero .total{font-size:36px;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin:2px 0 12px}
 .split{display:flex;height:10px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.12);margin-bottom:12px}
 .split span{display:block;height:100%}
-.accs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.accs{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+@media (min-width:480px){.accs{grid-template-columns:repeat(4,1fr)}}
+.caja{border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:8px}
+.caja .top2{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.caja .val{font-size:22px;font-weight:800}
 .acc{background:rgba(255,255,255,.07);border-radius:12px;padding:8px 10px}
 .acc .n{font-size:11px;opacity:.75;display:flex;align-items:center}
 .acc .v{font-weight:700;font-size:14px}
@@ -157,6 +161,10 @@ const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const STORAGE_KEY = 'jorge-finanzas-v13';
 const OLD_KEY = 'jorge-finanzas-v11';
 const FERIADOS_INIT = ['2026-11-23','2026-12-07','2026-12-08','2026-12-25','2027-01-01','2027-02-08','2027-02-09','2027-03-24','2027-03-25','2027-03-26','2027-04-02','2027-05-25','2027-06-21','2027-07-09','2027-08-16','2027-10-11','2027-12-08'];
+const CAJAS_INIT = [
+  {id:'ahorro', nombre:'Ahorro', tipo:'ahorro', color:'var(--ahorro)', montoSemanal:0, valor:null, valorTs:0},
+  {id:'jubi', nombre:'Caja jubilación', tipo:'jubilacion', color:'var(--jubi)', pct:10, valor:null, valorTs:0, reponer:0},
+];
 const CATS_VARIOS = ['PedidosYa','Higiene','Limpieza','Salidas','Ropa','Supermercado','Farmacia','Regalos','Otros varios'];
 const CATS_OTRAS = ['Comida mediodía','Corte de pelo','Vivienda','Patente','Suscripciones','Auto','Salud','Trabajo','Imprevisto','Otro'];
 
@@ -169,7 +177,9 @@ function datosIniciales(){
       {id:'bbva', nombre:'BBVA', color:'var(--bbva)', saldoInicial:177427},
       {id:'nx', nombre:'Naranja X', color:'var(--nx)', saldoInicial:351421},
       {id:'mp', nombre:'Mercado Pago', color:'var(--mp)', saldoInicial:0},
+      {id:'ef', nombre:'Efectivo', color:'var(--ef)', saldoInicial:6000},
     ],
+    cajas:CAJAS_INIT,
     movs:[], ocurr:{}, snapshots:{}, decisiones:{}, prestamos:[],
     tarjetas:[
       {id:'tbbva', nombre:'BBVA Visa', color:'var(--bbva)', cuentaPago:'bbva',
@@ -314,6 +324,21 @@ function totalesResumen(items,rid){
 }
 
 // Saldos reales
+// Cajas de ahorro: valor = último valor cargado + aportes − retiros posteriores (o aportes netos si nunca se actualizó)
+function estadoCaja(db,c){
+  const ms=db.movs.filter(m=>m.caja===c.id&&(m.tipo==='aporte'||m.tipo==='retiro'));
+  const neto=ms.reduce((a,m)=>a+(m.tipo==='aporte'?m.monto:-m.monto),0);
+  const aportado=ms.filter(m=>m.tipo==='aporte').reduce((a,m)=>a+m.monto,0), retirado=ms.filter(m=>m.tipo==='retiro').reduce((a,m)=>a+m.monto,0);
+  const valor=c.valor==null?neto:c.valor+ms.filter(m=>(m.ts||0)>(c.valorTs||0)).reduce((a,m)=>a+(m.tipo==='aporte'?m.monto:-m.monto),0);
+  return {valor,neto,aportado,retirado,rendimiento:valor-neto,rendPct:neto>0?(valor-neto)/neto*100:0};
+}
+const nextTs = db => Math.max(Date.now(), ...db.movs.map(m=>m.ts||0), ...(db.cajas||[]).map(c=>c.valorTs||0)) + 1;
+const totalCajas = db => (db.cajas||[]).reduce((a,c)=>a+estadoCaja(db,c).valor,0);
+function aporteSugerido(db,c,fecha){
+  const suel=db.recurrentes.find(r=>r.id==='sueldo');
+  if(c.tipo==='jubilacion'){ const base=Math.round((suel?montoVigente(suel,fecha):0)*(c.pct||0)/100); return base+Math.min(c.reponer||0,base); }
+  return c.montoSemanal||0;
+}
 function saldosReales(db,hasta){
   const s={}; const ah={};
   db.cuentas.forEach(c=>{ s[c.id]=c.saldoInicial; ah[c.id]=c.ahorroInicial||0; });
@@ -324,8 +349,8 @@ function saldosReales(db,hasta){
     else if(m.tipo==='reintegro'){ s[m.cuenta]+=mo; }
     else if(m.tipo==='ajuste'){ s[m.cuenta]+=mo; }
     else if(m.tipo==='transfer'){ s[m.cuenta]-=mo; s[m.cuentaDestino]+=mo; if(m.ahorro){ ah[m.cuenta]-=mo; ah[m.cuentaDestino]+=mo; } }
-    else if(m.tipo==='apartar'){ ah[m.cuenta]+=mo; }
-    else if(m.tipo==='liberar'){ ah[m.cuenta]-=mo; }
+    else if(m.tipo==='aporte'){ s[m.cuenta]-=mo; }
+    else if(m.tipo==='retiro'){ s[m.cuenta]+=mo; }
   });
   return {s,ah};
 }
@@ -372,7 +397,8 @@ function eventosFuturos(db,hasta){
   // esperados
   db.esperados.filter(e=>!e.hecho).forEach(e=>{
     const f=at(e.fecha); if(f>hasta) return;
-    if(e.tipo==='ingreso') ev.push({fecha:f, tipo:'ingreso', cuenta:e.cuenta, monto:e.monto, desc:e.desc, tentativo:e.tentativo, ahorro:e.ahorro, vencido:e.fecha<hoy, esperado:e.id});
+    if(e.tipo==='ingreso'){ ev.push({fecha:f, tipo:'ingreso', cuenta:e.cuenta, monto:e.monto, desc:e.desc, tentativo:e.tentativo, vencido:e.fecha<hoy, esperado:e.id});
+      if(e.ahorro) ev.push({fecha:f, tipo:'aporte', caja:'ahorro', cuenta:e.cuenta, monto:e.monto, desc:`Aporte al ahorro (${e.desc})`, tentativo:true}); }
     else ev.push({fecha:f, tipo:'gasto', grupo:'unico', cuenta:e.cuenta, monto:e.monto, desc:e.desc, tentativo:e.tentativo, vencido:e.fecha<hoy, esperado:e.id});
   });
   // devoluciones de préstamos con fecha prevista
@@ -388,6 +414,16 @@ function eventosFuturos(db,hasta){
       const f=w===hoyIni?hoy:w;
       if(resto>0&&f<=hasta) ev.push({fecha:f, tipo:'gasto', grupo:'presupuesto', cuenta:rec.medio, monto:resto, desc:`${rec.nombre}${w===hoyIni?' (lo que queda de la semana)':''}${p.descuento?` — compensa ${$(p.descuento)}`:''}`, estimado:true});
     });
+  });
+  // aportes semanales previstos a las cajas
+  (db.cajas||[]).forEach(c=>{
+    for(let w=viernesDe(hoy); w<=viernesDe(hasta); w=addD(w,7)){
+      if(db.movs.some(m=>m.tipo==='aporte'&&m.caja===c.id&&m.fecha>=w&&m.fecha<=addD(w,6))) continue;
+      if((db.decisiones||{})[`aporte|${c.id}|${w}`]) continue;
+      const monto=aporteSugerido(db,c,w); if(monto<=0) continue;
+      const f=w<hoy?hoy:w; if(f>hasta) continue;
+      ev.push({fecha:f, tipo:'aporte', caja:c.id, cuenta:c.cuentaAporte||'bbva', monto, desc:`Aporte a ${c.nombre}`, tentativo:true});
+    }
   });
   // pagos de resúmenes (parte propia)
   db.tarjetas.forEach(t=>{
@@ -422,12 +458,14 @@ function cashflow(db,nSem=12){
   const ahorroReal=Object.values(real.ah).reduce((a,b)=>a+b,0);
   const cols=sems.map((w,i)=>{
     const enW=f=>f>=w.a&&f<=w.b;
-    const det={ingresos:[],vivienda:[],fijos:[],unicos:[],presup:[],tarjeta:[],gastosReales:[],prestamos:[],pagos:[]};
+    const det={ingresos:[],vivienda:[],fijos:[],unicos:[],presup:[],tarjeta:[],gastosReales:[],prestamos:[],pagos:[],aportes:[]};
     // reales de la semana (hasta hoy)
     db.movs.filter(m=>enW(m.fecha)&&m.fecha<=hoy).forEach(m=>{
       if(m.tipo==='ingreso') det.ingresos.push({fecha:m.fecha,desc:m.desc+(m.ahorro?' (ahorro)':''),monto:m.monto,real:true,cuenta:m.cuenta});
       if(m.tipo==='gasto'&&m.prestamoId) det.prestamos.push({fecha:m.fecha,desc:m.desc,monto:m.monto,real:true,cuenta:m.cuenta});
       else if(m.tipo==='gasto') det.gastosReales.push({fecha:m.fecha,desc:m.desc,monto:m.monto,real:true,cuenta:m.cuenta});
+      if(m.tipo==='aporte') det.aportes.push({fecha:m.fecha,desc:`${m.desc||'Aporte'} → ${(db.cajas.find(c=>c.id===m.caja)||{}).nombre||''}`,monto:m.monto,real:true,cuenta:m.cuenta});
+      if(m.tipo==='retiro') det.aportes.push({fecha:m.fecha,desc:`Retiro de ${(db.cajas.find(c=>c.id===m.caja)||{}).nombre||''}${m.motivo?` (${m.motivo})`:''}`,monto:-m.monto,real:true,cuenta:m.cuenta});
       if(m.tipo==='pagoResumen') det.pagos.push({fecha:m.fecha,desc:m.desc,monto:m.montoPropio??m.monto,real:true,cuenta:m.cuenta});
       if(m.tipo==='ajuste') (m.monto>=0?det.ingresos:det.gastosReales).push({fecha:m.fecha,desc:m.desc,monto:Math.abs(m.monto),real:true,cuenta:m.cuenta});
     });
@@ -442,6 +480,7 @@ function cashflow(db,nSem=12){
       const it={fecha:e.fecha,desc:e.desc,monto:e.monto,tentativo:e.tentativo,estimado:e.estimado,vencido:e.vencido,cuenta:e.cuenta};
       if(e.tipo==='ingreso') det.ingresos.push(it);
       else if(e.tipo==='compraTarjeta') det.tarjeta.push(it);
+      else if(e.tipo==='aporte') det.aportes.push(it);
       else if(e.tipo==='pagoResumen') det.pagos.push(it);
       else if(e.grupo==='vivienda') det.vivienda.push(it);
       else if(e.grupo==='unico') det.unicos.push(it);
@@ -458,9 +497,10 @@ function cashflow(db,nSem=12){
       if(e.tipo==='ingreso') porCuenta[e.cuenta]+=e.monto; else if(e.tipo!=='compraTarjeta') porCuenta[e.cuenta]-=e.monto;
     });
     const proyectado=Object.values(porCuenta).reduce((a,b)=>a+b,0);
-    const ahorro=ahorroReal+fut.filter(e=>e.tipo==='ingreso'&&e.ahorro&&e.fecha<=w.b).reduce((a,b)=>a+b.monto,0);
+    const porCaja=Object.fromEntries((db.cajas||[]).map(c=>[c.id,estadoCaja(db,c).valor+fut.filter(e=>e.tipo==='aporte'&&e.caja===c.id&&e.fecha<=w.b).reduce((a,b)=>a+b.monto,0)]));
+    const ahorro=Object.values(porCaja).reduce((a,b)=>a+b,0);
     const deuda=deudaTarjetas(db,w.b,hasta);
-    return {...w,i,det,ingresos,egresos,balance,proyectado,porCuenta,deuda,ahorro,pagosResumen:S(det.pagos),real:i===0?realTotal:null};
+    return {...w,i,det,ingresos,egresos,balance,proyectado,porCuenta,porCaja,deuda,ahorro,aportes:S(det.aportes),pagosResumen:S(det.pagos),real:i===0?realTotal:null};
   });
   return {cols,real,realTotal,ahorroReal,fut};
 }
@@ -591,14 +631,15 @@ function FormIngreso({db,save,onClose,inicial}){
   const ed=inicial||{};
   const abiertos=sueldosAbiertos(db,ed.recKey);
   const defKey=ed.recKey||(abiertos.find(o=>o.fecha>=addD(hoyStr(),-6))||abiertos[0]||{}).key||'';
-  const [v,setV]=useState({monto:ed.monto??'',subtipo:ed.subtipo||'Evento musical',desc:ed.desc||'',cuenta:ed.cuenta||'bbva',ahorro:!!ed.ahorro,fecha:ed.fecha||hoyStr(),recKey:defKey,cerrar:false});
+  const [v,setV]=useState({monto:ed.monto??'',subtipo:ed.subtipo||'Evento musical',desc:ed.desc||'',cuenta:ed.cuenta||'bbva',caja:ed.ahorro?'ahorro':'',fecha:ed.fecha||hoyStr(),recKey:defKey,cerrar:false});
   const oc=v.subtipo==='Sueldo'?abiertos.find(o=>o.key===v.recKey):null;
   const restoOc=oc?oc.resto+(ed.id&&ed.recKey===oc.key?(ed.monto||0):0):0;
   const ok=()=>{ const m=num(v.monto); if(m<=0) return;
     if(v.subtipo==='Sueldo'&&abiertos.length&&!v.recKey) return alert('Elegí a qué viernes corresponde el sueldo.');
     const recKey=v.subtipo==='Sueldo'?(v.recKey||undefined):undefined;
-    const mov={id:ed.id||uid(),fecha:v.fecha,tipo:'ingreso',subtipo:v.subtipo,monto:m,cuenta:v.cuenta,desc:v.desc||v.subtipo,ahorro:v.ahorro,recKey};
+    const mov={id:ed.id||uid(),fecha:v.fecha,tipo:'ingreso',subtipo:v.subtipo,monto:m,cuenta:v.cuenta,desc:v.desc||v.subtipo,recKey};
     let d={...db,movs:[...db.movs.filter(x=>x.id!==ed.id),mov]};
+    if(v.caja&&!ed.id){ d.movs=[...d.movs,{id:uid(),ts:nextTs(db),fecha:v.fecha,tipo:'aporte',caja:v.caja,cuenta:v.cuenta,monto:m,desc:`Aporte desde ${v.desc||v.subtipo}`}]; }
     if(ed.recKey&&ed.recKey!==recKey) d=quitarCierre(d,ed.recKey);
     if(recKey&&v.cerrar) d.ocurr={...d.ocurr,[recKey]:{...(d.ocurr[recKey]||{}),cerrado:true}};
     if(ed.esperado) d.esperados=d.esperados.map(e=>e.id===ed.esperado?{...e,hecho:true,movId:mov.id}:e);
@@ -613,7 +654,7 @@ function FormIngreso({db,save,onClose,inicial}){
       <label className="check"><input type="radio" checked={!v.cerrar} onChange={()=>setV({...v,cerrar:false})} /> Lo que falta lo cobro después</label>
       <label className="check"><input type="radio" checked={v.cerrar} onChange={()=>setV({...v,cerrar:true})} /> Doy este sueldo por cerrado</label></div>}
     <F label="Entra en"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
-    <label className="check"><input type="checkbox" checked={v.ahorro} onChange={e=>setV({...v,ahorro:e.target.checked})} /> Apartarlo como ahorro</label>
+    {!ed.id&&<F label="¿Va a alguna caja?"><select value={v.caja} onChange={e=>setV({...v,caja:e.target.value})}><option value="">No, queda disponible</option>{db.cajas.map(c=><option key={c.id} value={c.id}>Todo a {c.nombre}</option>)}</select></F>}
     <F label="Detalle (opcional)"><input value={v.desc} onChange={e=>setV({...v,desc:e.target.value})} placeholder={v.subtipo==='Sueldo'?'Ej: adelanto':'Ej: Acústico Bar Irlanda'} /></F>
     <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
     <div className="btns"><button className="btn pri" onClick={ok}>Guardar ingreso</button>
@@ -652,19 +693,57 @@ function FormTransfer({db,save,onClose}){
   </div></Sheet>;
 }
 
-function FormAhorro({db,save,onClose,inicial}){
-  const {s,ah}=saldosReales(db,hoyStr());
-  const [v,setV]=useState({accion:inicial?.accion||'apartar',monto:inicial?.monto??'',cuenta:inicial?.cuenta||'bbva',desc:inicial?.desc||''});
-  const disp=v.accion==='apartar'?s[v.cuenta]-ah[v.cuenta]:ah[v.cuenta];
-  const ok=()=>{ const m=num(v.monto); if(m<=0) return; let d={...db,movs:[...db.movs,{id:uid(),fecha:hoyStr(),tipo:v.accion,monto:m,cuenta:v.cuenta,desc:v.desc||(v.accion==='apartar'?'Apartado al ahorro':'Liberado del ahorro')}]};
-    if(inicial?.semana) d.decisiones={...d.decisiones,['sobrante|'+inicial.semana]:'apartado'}; save(d); onClose(); };
-  return <Sheet title="Ahorro" onClose={onClose}><div className="form">
-    <div className="seg"><button className={v.accion==='apartar'?'on':''} onClick={()=>setV({...v,accion:'apartar'})}>Apartar</button><button className={v.accion==='liberar'?'on':''} onClick={()=>setV({...v,accion:'liberar'})}>Liberar (urgencia)</button></div>
-    <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
-    <F label="Cuenta"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
-    <div className="muted">{v.accion==='apartar'?`Disponible para apartar en ${nombreMedio(db,v.cuenta)}: ${$(disp)}`:`Ahorro apartado en ${nombreMedio(db,v.cuenta)}: ${$(disp)}`}</div>
-    <div className="muted">La plata queda en la misma cuenta; solo cambia si está disponible para gastar o apartada.</div>
-    <button className="btn pri" onClick={ok}>{v.accion==='apartar'?'Apartar':'Liberar'}</button>
+function FormCaja({db,save,onClose,cajaId,accion:acc0,monto:monto0,desc:desc0,semana}){
+  const [cid,setCid]=useState(cajaId||'ahorro');
+  const c=(db.cajas||[]).find(x=>x.id===cid)||db.cajas[0];
+  const st=estadoCaja(db,c);
+  const sug=aporteSugerido(db,c,hoyStr());
+  const [v,setV]=useState({accion:acc0||'aportar',monto:monto0??(sug||''),cuenta:c.cuentaAporte||'bbva',fecha:hoyStr(),motivo:'',reponer:false,valor:Math.round(st.valor),nombre:c.nombre});
+  const jubi=c.tipo==='jubilacion';
+  const updCaja=(d,patch)=>({...d,cajas:d.cajas.map(x=>x.id===c.id?{...x,...patch}:x)});
+  const ok=()=>{
+    let d={...db};
+    if(v.nombre.trim()&&v.nombre.trim()!==c.nombre) d=updCaja(d,{nombre:v.nombre.trim()});
+    const m=num(v.monto);
+    if(v.accion==='aportar'){ if(m<=0) return;
+      d.movs=[...d.movs,{id:uid(),ts:nextTs(db),fecha:v.fecha,tipo:'aporte',caja:c.id,cuenta:v.cuenta,monto:m,desc:desc0||`Aporte a ${v.nombre||c.nombre}`}];
+      if(jubi&&(c.reponer||0)>0){ const base=aporteSugerido(db,{...c,reponer:0},v.fecha); d=updCaja(d,{reponer:Math.max(0,(c.reponer||0)-Math.max(0,m-base))}); }
+      d=updCaja(d,{cuentaAporte:v.cuenta});
+      if(semana) d.decisiones={...d.decisiones,['sobrante|'+semana]:'apartado'};
+    } else if(v.accion==='retirar'){ if(m<=0) return;
+      if(jubi&&!v.motivo.trim()) return alert('Contá para qué la sacás. Queda registrado en la caja.');
+      if(m>st.valor+1&&!confirm('Es más de lo que hay en la caja. ¿Seguir igual?')) return;
+      if(jubi&&!confirm(`Vas a sacar ${$(m)} de tu ${c.nombre}. Es plata para tu jubilación: ¿seguro?`)) return;
+      d.movs=[...d.movs,{id:uid(),ts:nextTs(db),fecha:v.fecha,tipo:'retiro',caja:c.id,cuenta:v.cuenta,monto:m,motivo:v.motivo.trim(),desc:`Retiro de ${v.nombre||c.nombre}`}];
+      if(jubi&&v.reponer) d=updCaja(d,{reponer:(c.reponer||0)+m});
+    } else if(v.accion==='valor'){ d=updCaja(d,{valor:num(v.valor),valorTs:nextTs(db),valorFecha:hoyStr()}); }
+    save(d); onClose(); };
+  return <Sheet title={c.nombre} onClose={onClose}><div className="form">
+    {!cajaId&&<div className="seg">{db.cajas.map(x=><button key={x.id} className={cid===x.id?'on':''} onClick={()=>{setCid(x.id); const sx=aporteSugerido(db,x,hoyStr()); setV({...v,nombre:x.nombre,monto:sx||'',valor:Math.round(estadoCaja(db,x).valor),cuenta:x.cuentaAporte||v.cuenta});}}>{x.nombre}</button>)}</div>}
+    <div className="caja" style={{marginBottom:0}}>
+      <div className="top2"><span className="muted">Valor actual</span><span className="val" style={{color:c.color}}>{$(st.valor)}</span></div>
+      <div className="barline"><span>Aportado neto {$(st.neto)}</span><span className={st.rendimiento>=0?'pos':'neg'}>{st.rendimiento?`Rendimiento ${$s(st.rendimiento)} (${st.rendPct.toFixed(1)}%)`:''}</span></div>
+      {st.retirado>0&&<div className="mini">Retiraste {$(st.retirado)} en total{jubi&&c.reponer>0?` · falta reponer ${$(c.reponer)}`:''}</div>}
+    </div>
+    <div className="seg">{[['aportar','Aportar'],['retirar','Retirar'],['valor','Actualizar valor']].map(([k,l])=><button key={k} className={v.accion===k?'on':''} onClick={()=>setV({...v,accion:k,monto:k==='aportar'?(sug||''):''})}>{l}</button>)}</div>
+    {v.accion==='aportar'&&<>
+      <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} /></F>
+      {sug>0&&<div className="mini">Sugerido para esta semana: {$(sug)}{jubi?` (${c.pct}% del sueldo${c.reponer>0?' + reposición':''})`:''}</div>}
+      <F label="Sale de"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
+      <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F>
+      <div className="muted">Pasa de la cuenta a la caja. No cuenta como egreso: sigue siendo tu plata.</div></>}
+    {v.accion==='retirar'&&<>
+      {jubi&&<div className="alert w"><div className="b">Esta plata es para tu jubilación. Retirala solo si es un imprevisto de verdad.</div></div>}
+      <F label="Monto"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} /></F>
+      <F label="Va a"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
+      {jubi&&<F label="¿Para qué?"><input value={v.motivo} onChange={e=>setV({...v,motivo:e.target.value})} placeholder="Ej: arreglo del auto" /></F>}
+      {jubi&&<label className="check"><input type="checkbox" checked={v.reponer} onChange={e=>setV({...v,reponer:e.target.checked})} /> Lo voy a reponer (se suma a los próximos aportes)</label>}
+      <F label="Fecha"><input type="date" value={v.fecha} onChange={e=>setV({...v,fecha:e.target.value})} /></F></>}
+    {v.accion==='valor'&&<>
+      <div className="muted">Poné lo que ves hoy en el frasco o en el broker. La diferencia con lo que aportaste queda como rendimiento.</div>
+      <F label="Valor actual"><MontoInput value={v.valor} onChange={x=>setV({...v,valor:x})} /></F></>}
+    <F label="Nombre de la caja"><input value={v.nombre} onChange={e=>setV({...v,nombre:e.target.value})} /></F>
+    <button className="btn pri" onClick={ok}>{v.accion==='aportar'?'Registrar aporte':v.accion==='retirar'?'Registrar retiro':'Guardar valor'}</button>
   </div></Sheet>;
 }
 
@@ -976,8 +1055,8 @@ function FormPagarResumen({db,save,onClose,t,r,tot,rsAll}){
 // ================= INICIO =================
 function Inicio({db,save,abrir}){
   const hoy=hoyStr(); const hoyIni=viernesDe(hoy);
-  const {s,ah}=saldosReales(db,hoy);
-  const total=Object.values(s).reduce((a,b)=>a+b,0); const ahorro=Object.values(ah).reduce((a,b)=>a+b,0);
+  const {s}=saldosReales(db,hoy);
+  const total=Object.values(s).reduce((a,b)=>a+b,0); const ahorro=totalCajas(db);
   const deuda=deudaTarjetas(db,hoy).total;
   const pos=db.cuentas.map(c=>Math.max(0,s[c.id])); const sp=pos.reduce((a,b)=>a+b,0)||1;
   const recV=db.recurrentes.find(r=>r.id==='varios'), recC=db.recurrentes.find(r=>r.id==='comida');
@@ -990,6 +1069,14 @@ function Inicio({db,save,abrir}){
     acc:[[`Sí, ${$(o.resto)}`,()=>save({...db,movs:[...db.movs,{id:uid(),fecha:o.fecha<=hoy?o.fecha:hoy,tipo:'ingreso',subtipo:'Sueldo',monto:o.resto,cuenta:o.rec.medio,desc:'Sueldo',recKey:o.key}]})],
       ['Cobré distinto',()=>abrir('ingreso',{inicial:{subtipo:'Sueldo',recKey:o.key,monto:Math.round(o.resto),cuenta:o.rec.medio,fecha:o.fecha}})],
       ['Todavía no',()=>abrir('moverCobro',{oc:o})]]}));
+  // aportes de la semana a las cajas (cuando ya cobraste)
+  const cobroSemana=db.movs.some(m=>m.tipo==='ingreso'&&m.subtipo==='Sueldo'&&m.fecha>=hoyIni&&m.fecha<=addD(hoyIni,6));
+  if(cobroSemana) (db.cajas||[]).forEach(c=>{ const sug=aporteSugerido(db,c,hoyIni); if(sug<=0) return;
+    if(db.movs.some(m=>m.tipo==='aporte'&&m.caja===c.id&&m.fecha>=hoyIni&&m.fecha<=addD(hoyIni,6))) return;
+    if((db.decisiones||{})[`aporte|${c.id}|${hoyIni}`]) return;
+    alerts.push({k:'ap'+c.id,cls:'i',h:c.tipo==='jubilacion'?`Separá el ${c.pct}% para tu jubilación: ${$(sug)}`:`Separá tu ahorro de la semana: ${$(sug)}`,
+      b:c.tipo==='jubilacion'&&c.reponer>0?`Incluye reposición del retiro (faltan ${$(c.reponer)}).`:`Va a ${c.nombre}.`,
+      acc:[['Separar',()=>abrir('ahorro',{cajaId:c.id,accion:'aportar',monto:sug})],['Esta semana no',()=>save({...db,decisiones:{...db.decisiones,[`aporte|${c.id}|${hoyIni}`]:'omitido'}})]]}); });
   // tarjetas
   db.tarjetas.forEach(t=>{
     const {rs,items}=itemsTarjeta(db,t,addD(hoy,90));
@@ -1026,7 +1113,7 @@ function Inicio({db,save,abrir}){
     if(dd<=10) alerts.push({k:'act'+r.id,cls:'w',h:`${r.nombre}: actualización ${dd<0?'pendiente':`en ${dd} días`}`,b:`Toca el aumento trimestral (${fC(prox)}). Cargá el nuevo valor en Recurrentes cuando lo sepas.`,acc:[['Cargar nuevo valor',()=>abrir('rec',{r})]]}); });
   // sobrante semana anterior
   if(recV){ const prev=addD(hoyIni,-7); const p=presupuestoSemanas(db,recV,hoyIni)[prev];
-    if(p&&p.sobrante>0&&!db.decisiones['sobrante|'+prev]) alerts.push({k:'sob',cls:'i',h:`La semana pasada te sobraron ${$(p.sobrante)} de varios`,b:'Lo recomendable es apartarlo como ahorro.',acc:[['Apartar',()=>abrir('ahorro',{inicial:{accion:'apartar',monto:Math.round(p.sobrante),desc:'Sobrante de varios',semana:prev}})],['Ahora no',()=>save({...db,decisiones:{...db.decisiones,['sobrante|'+prev]:'omitido'}})]]}); }
+    if(p&&p.sobrante>0&&!db.decisiones['sobrante|'+prev]) alerts.push({k:'sob',cls:'i',h:`La semana pasada te sobraron ${$(p.sobrante)} de varios`,b:'Lo recomendable es pasarlo al ahorro.',acc:[['Pasar al ahorro',()=>abrir('ahorro',{cajaId:'ahorro',accion:'aportar',monto:Math.round(p.sobrante),desc:'Sobrante de varios',semana:prev})],['Ahora no',()=>save({...db,decisiones:{...db.decisiones,['sobrante|'+prev]:'omitido'}})]]}); }
   // tope de cuotas
   const ingMes=montoVigente(db.recurrentes.find(r=>r.id==='sueldo')||{montos:[]},hoy)*52/12; const tope=ingMes*(db.tope_cuotas_pct||10)/100;
   const cuotasMes=cuotasComprometidas(db,1)[0];
@@ -1034,11 +1121,11 @@ function Inicio({db,save,abrir}){
 
   return <div>
     <div className="hero">
-      <div className="lbl">Total en tus cuentas</div>
+      <div className="lbl">Disponible en tus cuentas</div>
       <div className="total">{$(total)}</div>
       <div className="split" aria-hidden="true">{db.cuentas.map((c,i)=><span key={c.id} style={{width:(pos[i]/sp*100)+'%',background:c.color}}></span>)}</div>
-      <div className="accs">{db.cuentas.map(c=><div key={c.id} className="acc"><div className="n"><span className="dot" style={{background:c.color}}></span>{c.nombre}</div><div className="v">{$(s[c.id])}</div>{ah[c.id]>0&&<div className="mini" style={{color:'inherit',opacity:.7}}>ahorro {$(ah[c.id])}</div>}</div>)}</div>
-      <div className="sub"><span>Ahorro apartado {$(ahorro)}</span>{totalTeDeben(db)>0&&<span>Te deben {$(totalTeDeben(db))}</span>}<span>Deuda tarjetas {$(deuda)}</span></div>
+      <div className="accs">{db.cuentas.map(c=><div key={c.id} className="acc"><div className="n"><span className="dot" style={{background:c.color}}></span>{c.nombre}</div><div className="v">{$(s[c.id])}</div></div>)}</div>
+      <div className="sub"><span>Con ahorros {$(total+ahorro)}</span>{totalTeDeben(db)>0&&<span>Te deben {$(totalTeDeben(db))}</span>}<span>Deuda tarjetas {$(deuda)}</span></div>
     </div>
     <div className="fab">
       <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Egreso</button>
@@ -1055,15 +1142,21 @@ function Inicio({db,save,abrir}){
     {alerts.length>0&&<div className="card"><h2>Avisos</h2>
       {alerts.map(a=><div key={a.k} className={'alert '+a.cls}><div className="h">{a.h}</div><div className="b">{a.b}</div>{a.acc&&<div className="btns" style={{marginTop:8}}>{a.acc.map(([l,fn])=><button key={l} className="btn sm" onClick={fn}>{l}</button>)}</div>}</div>)}
     </div>}
+    <Cajas db={db} abrir={abrir} />
     <Prestamos db={db} abrir={abrir} />
-    <MetaAhorro db={db} ahorro={ahorro} />
   </div>;
 }
-function MetaAhorro({db,ahorro}){
-  const meta=db.metaAhorro||0; if(!meta) return null;
-  return <div className="card"><h2>Fondo de emergencia <span className="muted">meta {$(meta)}</span></h2>
-    <div className="bar" style={{height:14}}><span style={{width:Math.min(100,ahorro/meta*100)+'%',background:'var(--ahorro)'}}></span></div>
-    <div className="barline"><span>{$(ahorro)} apartado</span><span>{Math.round(ahorro/meta*100)}%</span></div></div>;
+function Cajas({db,abrir}){
+  return <div className="card"><h2>Ahorros <span className="muted">{$(totalCajas(db))}</span></h2>
+    {(db.cajas||[]).map(c=>{ const st=estadoCaja(db,c); return <div key={c.id} className="caja" onClick={()=>abrir('ahorro',{cajaId:c.id})} style={{cursor:'pointer'}}>
+      <div className="top2"><b>{c.nombre}</b><span className="val" style={{color:c.color}}>{$(st.valor)}</span></div>
+      <div className="barline"><span>{c.tipo==='jubilacion'?`${c.pct}% del sueldo cada semana`:c.montoSemanal?`${$(c.montoSemanal)} por semana`:'Sin aporte fijo'}</span>
+        <span className={st.rendimiento>=0?'pos':'neg'}>{st.rendimiento?`${$s(st.rendimiento)} (${st.rendPct.toFixed(1)}%)`:''}</span></div>
+      {c.valorFecha&&<div className="mini">Valor actualizado el {fL(c.valorFecha)}</div>}
+      {c.tipo==='jubilacion'&&c.reponer>0&&<div className="mini warn">Falta reponer {$(c.reponer)}</div>}
+    </div>; })}
+    <div className="mini">Tocá una caja para aportar, retirar o actualizar su valor.</div>
+  </div>;
 }
 function cuotasComprometidas(db,n=6){
   const hoy=hoyStr(); const meses={};
@@ -1099,7 +1192,7 @@ function FormEsperado({db,save,onClose,e}){
       <F label="Fecha"><input type="date" value={v.fecha} onChange={x=>setV({...v,fecha:x.target.value})} /></F></div>
     {v.tipo==='ingreso'&&<F label="Tipo"><div className="seg">{TIPOS_ING.filter(t=>t!=='Sueldo').map(t=><button key={t} className={v.subtipo===t?'on':''} onClick={()=>setV({...v,subtipo:t})}>{t}</button>)}</div></F>}
     <F label={v.tipo==='gasto'?'Se paga desde':'Entra en'}><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
-    {v.tipo==='ingreso'&&<label className="check"><input type="checkbox" checked={v.ahorro} onChange={x=>setV({...v,ahorro:x.target.checked})} /> Apartarlo como ahorro</label>}
+    {v.tipo==='ingreso'&&<label className="check"><input type="checkbox" checked={v.ahorro} onChange={x=>setV({...v,ahorro:x.target.checked})} /> Mandarlo al ahorro cuando llegue</label>}
     <label className="check"><input type="checkbox" checked={v.tentativo} onChange={x=>setV({...v,tentativo:x.target.checked})} /> A confirmar (fecha o monto inseguros)</label>
     <div className="btns"><button className="btn pri" onClick={ok}>Guardar</button>{ed.id&&<button className="btn danger" onClick={()=>{save({...db,esperados:db.esperados.filter(x=>x.id!==ed.id)});onClose();}}>Eliminar</button>}</div>
   </div></Sheet>;
@@ -1154,7 +1247,7 @@ function Movimientos({db,save,abrir}){
   ].filter(m=>filtro==='todos'||(filtro==='gastos'&&(m.tipo==='gasto'||m.tipo==='tarjeta'))||(filtro==='ingresos'&&m.tipo==='ingreso')||(filtro==='otros'&&!['gasto','tarjeta','ingreso'].includes(m.tipo)))
    .sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const grupos={}; lista.forEach(m=>{const w=viernesDe(m.fecha);(grupos[w]=grupos[w]||[]).push(m);});
-  const signo=m=>m.tipo==='ingreso'||m.tipo==='reintegro'||(m.tipo==='ajuste'&&m.monto>0)?1:(m.tipo==='transfer'||m.tipo==='apartar'||m.tipo==='liberar')?0:-1;
+  const signo=m=>m.tipo==='ingreso'||m.tipo==='reintegro'||(m.tipo==='ajuste'&&m.monto>0)?1:(m.tipo==='transfer'||m.tipo==='aporte'||m.tipo==='retiro')?0:-1;
   const editar=m=>{ if(m.prestamoId){ const p=(db.prestamos||[]).find(x=>x.id===m.prestamoId); if(m.tipo==='gasto'&&p) return abrir('prestamo',{p}); if(confirm('¿Eliminar esta devolución?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); return; }
     if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
     else if(m.tipo==='gasto') abrir('gasto',{inicial:{kind:'mov',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.cuenta,fecha:m.fecha}});
@@ -1174,7 +1267,7 @@ function Movimientos({db,save,abrir}){
       <h2>Semana del vie {fC(w)} <span className="muted">{$(ms.reduce((a,m)=>a+signo(m)*m.monto,0))}</span></h2>
       {ms.map(m=><div className="row" key={m.kind+m.id} onClick={()=>editar(m)} style={{cursor:'pointer'}}>
         <div className="l"><div className="t">{m.desc}</div>
-          <div className="s">{fL(m.fecha)} · {m.tipo==='transfer'?`${nombreMedio(db,m.cuenta)} → ${nombreMedio(db,m.cuentaDestino)}`:nombreMedio(db,m.medio||m.cuenta)}{m.cuotas>1?` · ${m.cuotas} cuotas`:''}{m.cat?` · ${m.cat}`:''}</div>
+          <div className="s">{fL(m.fecha)} · {m.tipo==='aporte'?`${nombreMedio(db,m.cuenta)} → ${(db.cajas.find(c=>c.id===m.caja)||{}).nombre}`:m.tipo==='retiro'?`${(db.cajas.find(c=>c.id===m.caja)||{}).nombre} → ${nombreMedio(db,m.cuenta)}${m.motivo?` · ${m.motivo}`:''}`:m.tipo==='transfer'?`${nombreMedio(db,m.cuenta)} → ${nombreMedio(db,m.cuentaDestino)}`:nombreMedio(db,m.medio||m.cuenta)}{m.cuotas>1?` · ${m.cuotas} cuotas`:''}{m.cat?` · ${m.cat}`:''}</div>
           <div>{m.ahorro&&<span className="chip aho">ahorro</span>} {m.prestamoId&&<span className="chip">{m.tipo==='gasto'?'préstamo':'devolución'}</span>} {m.tercero&&<span className="chip">de terceros</span>} {m.auto&&<span className="chip">automático</span>}</div></div>
         <span className={'amt '+(signo(m)>0?'pos':signo(m)<0?'':'muted')}>{signo(m)>0?'+':signo(m)<0?'−':''}{$(Math.abs(m.monto))}</span>
       </div>)}
@@ -1257,7 +1350,8 @@ function Cashflow({db}){
         <tr className="key sep"><td className="stick">Balance sem.</td>{C.map(c=><td key={c.a} className={(c.i===0?'cur ':'')+(c.balance<0?'neg':'pos')}>{$s(c.balance)}</td>)}</tr>
         <tr><td className="stick">Pago de resúmenes</td>{C.map(c=><React.Fragment key={c.a}>{celda(c.pagosResumen,c.det.pagos,`Pagos de resúmenes · ${fC(c.a)} al ${fC(c.b)}`,-1)}</React.Fragment>)}</tr>
         <tr><td className="stick">Deuda tarjetas</td>{C.map(c=><td key={c.a} className="tap" onClick={()=>setDet({titulo:`Deuda de tarjetas al ${fC(c.b)}`,items:db.tarjetas.map(t=>({desc:t.nombre,monto:c.deuda.por[t.id]||0})),sign:0})}>{$(c.deuda.total)}</td>)}</tr>
-        <tr><td className="stick">Ahorro apartado</td>{C.map(c=><td key={c.a} style={{color:'var(--ahorro)'}}>{$(c.ahorro)}</td>)}</tr>
+        <tr><td className="stick">Aportes a cajas</td>{C.map(c=><React.Fragment key={c.a}>{celda(c.aportes,c.det.aportes,`Aportes y retiros · ${fC(c.a)} al ${fC(c.b)}`,-1)}</React.Fragment>)}</tr>
+        {(db.cajas||[]).map(cj=><tr key={cj.id}><td className="stick" style={{color:cj.color}}>{cj.nombre}</td>{C.map(c=><td key={c.a} style={{color:cj.color}}>{$(c.porCaja[cj.id])}</td>)}</tr>)}
         <tr className="key"><td className="stick">Proyectado</td>{C.map(c=><td key={c.a} className={'tap '+(c.i===0?'cur ':'')+(c.proyectado<0?'neg':'')} onClick={()=>setDet({titulo:`Saldo proyectado al ${fC(c.b)}`,items:db.cuentas.map(x=>({desc:x.nombre,monto:c.porCuenta[x.id]})),sign:0})}>{$(c.proyectado)}{db.cuentas.some(x=>c.porCuenta[x.id]<0)&&c.proyectado>=0?<span className="neg"> !</span>:null}</td>)}</tr>
         <tr className="key"><td className="stick">Real</td>{C.map(c=><td key={c.a} className={c.i===0?'cur':''}>{c.real!==null?$(c.real):<span className="muted">—</span>}</td>)}</tr>
       </tbody></table></div>
@@ -1266,6 +1360,7 @@ function Cashflow({db}){
       <div className="muted" style={{fontSize:13}}>
         <p><b>Balance sem.:</b> ingresos menos egresos de la semana (los préstamos que das cuentan como egreso y las devoluciones como ingreso). Las compras con tarjeta cuentan la semana en que comprás.</p>
         <p style={{marginTop:6}}><b>Pago de resúmenes:</b> plata que sale de la cuenta para pagar la tarjeta. No es un egreso nuevo: baja la deuda.</p>
+        <p style={{marginTop:6}}><b>Aportes a cajas:</b> plata que pasás al ahorro o a la caja jubilación. Sale de las cuentas pero sigue siendo tuya, así que no cuenta como egreso.</p>
         <p style={{marginTop:6}}><b>Proyectado:</b> lo que vas a tener en las cuentas al jueves. Se compara con el <b>Real</b>. Un "!" avisa que alguna cuenta queda en negativo aunque el total no.</p>
       </div></div>
     {det&&<Sheet title={det.titulo} onClose={()=>setDet(null)}>
@@ -1313,8 +1408,10 @@ function Config({db,save,abrir,setDb,nubeProps}){
     <SeccionNube {...nubeProps} />
     <SeccionInstalar />
     <div className="card"><h2>Saldos</h2><div className="muted" style={{marginBottom:8}}>Si la app no coincide con tus cuentas, ajustalo acá.</div><button className="btn" onClick={()=>abrir('ajuste')}>Ajustar saldos reales</button></div>
-    <div className="card"><h2>Ahorro</h2>
-      <div className="row"><span className="l">Meta del fondo de emergencia</span><input style={{width:130,textAlign:'right',padding:'6px 8px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}} inputMode="numeric" value={db.metaAhorro} onChange={e=>save({...db,metaAhorro:num(e.target.value)})} /></div>
+    <div className="card"><h2>Ahorros</h2>
+      {(db.cajas||[]).map(c=><div className="row" key={c.id}><span className="l">{c.tipo==='jubilacion'?`${c.nombre}: % del sueldo`:`${c.nombre}: aporte por semana`}</span>
+        <input style={{width:110,textAlign:'right',padding:'6px 8px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}} inputMode="numeric" value={c.tipo==='jubilacion'?c.pct:c.montoSemanal} onChange={e=>save({...db,cajas:db.cajas.map(x=>x.id===c.id?(c.tipo==='jubilacion'?{...x,pct:num(e.target.value)}:{...x,montoSemanal:num(e.target.value)}):x)})} /></div>)}
+      <div className="mini">El nombre y el valor de cada caja se cambian tocándola en el inicio.</div>
       <div className="row"><span className="l">Tope de cuotas (% del ingreso mensual)</span><input style={{width:70,textAlign:'right',padding:'6px 8px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}} inputMode="numeric" value={db.tope_cuotas_pct} onChange={e=>save({...db,tope_cuotas_pct:num(e.target.value)})} /></div>
     </div>
     <div className="card"><h2>Categorías de gastos varios</h2><div className="muted" style={{marginBottom:6}}>Estas cuentan para la barra semanal de $100.000.</div>
@@ -1375,7 +1472,19 @@ function SeccionInstalar(){
 
 // ================= APP =================
 const TABS=[['inicio','Inicio','🏠'],['movs','Movimientos','📝'],['tarjetas','Tarjetas','💳'],['cash','Cashflow','📊'],['rec','Recurrentes','🔁'],['config','Ajustes','⚙️']];
-function migrar(d){ if(!d) return d; const catsOtras=(d.catsOtras||CATS_OTRAS).includes('Suscripciones')?(d.catsOtras||CATS_OTRAS):[...(d.catsOtras||CATS_OTRAS).slice(0,4),'Suscripciones',...(d.catsOtras||CATS_OTRAS).slice(4)]; return {...d, prestamos:d.prestamos||[], catsOtras, tema:d.tema||'claro'}; }
+function migrarCajas(d){
+  if(d.cajas) return d;
+  const movs=[]; d.movs.forEach(m=>{
+    if(m.tipo==='apartar') movs.push({...m,tipo:'aporte',caja:/jubil/i.test(m.desc||'')?'jubi':'ahorro',ts:1});
+    else if(m.tipo==='liberar') movs.push({...m,tipo:'retiro',caja:'ahorro',ts:1});
+    else if(m.tipo==='ingreso'&&m.ahorro){ movs.push({...m,ahorro:false}); movs.push({id:m.id+'-ap',fecha:m.fecha,tipo:'aporte',caja:'ahorro',cuenta:m.cuenta,monto:m.monto,desc:'Aporte desde '+(m.desc||'ingreso'),ts:1}); }
+    else if(m.tipo==='transfer'&&m.ahorro) movs.push({...m,ahorro:false});
+    else movs.push(m);
+  });
+  const cuentas=d.cuentas.some(c=>c.id==='ef')?d.cuentas:[...d.cuentas,{id:'ef',nombre:'Efectivo',color:'var(--ef)',saldoInicial:6000}];
+  return {...d,movs,cuentas,cajas:CAJAS_INIT};
+}
+function migrar(d){ if(!d) return d; d=migrarCajas(d); const catsOtras=(d.catsOtras||CATS_OTRAS).includes('Suscripciones')?(d.catsOtras||CATS_OTRAS):[...(d.catsOtras||CATS_OTRAS).slice(0,4),'Suscripciones',...(d.catsOtras||CATS_OTRAS).slice(4)]; return {...d, prestamos:d.prestamos||[], catsOtras, tema:d.tema||'claro'}; }
 function cargar(){ try{ const d=JSON.parse(localStorage.getItem(STORAGE_KEY)); if(d&&d.version===13) return migrar(d); }catch(e){} return null; }
 try{ const d0=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); document.documentElement.setAttribute('data-theme',d0.tema==='oscuro'?'dark':'light'); }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 function App(){
@@ -1439,7 +1548,7 @@ function App(){
     {modal?.tipo==='gasto'&&<FormGasto {...mp} />}
     {modal?.tipo==='ingreso'&&<FormIngreso {...mp} />}
     {modal?.tipo==='transfer'&&<FormTransfer {...mp} />}
-    {modal?.tipo==='ahorro'&&<FormAhorro {...mp} />}
+    {modal?.tipo==='ahorro'&&<FormCaja {...mp} />}
     {modal?.tipo==='pagarRec'&&<FormPagarRec {...mp} />}
     {modal?.tipo==='moverCobro'&&<FormMoverCobro {...mp} />}
     {modal?.tipo==='confirmar'&&<FormConfirmar {...mp} />}
