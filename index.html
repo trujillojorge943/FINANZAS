@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="JENT Finanzas">
 <title>JENT Finanzas</title>
-<!-- v17.1: ahorros en línea compacta con historial -->
+<!-- v17.2: semanas de lunes a domingo -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -153,7 +153,8 @@ const addD = (s,n) => { const d=pd(s); d.setDate(d.getDate()+n); return ds(d); }
 const addM = (s,n) => { const d=pd(s); const day=d.getDate(); d.setDate(1); d.setMonth(d.getMonth()+n); const last=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(); d.setDate(Math.min(day,last)); return ds(d); };
 const dow = s => pd(s).getDay();
 const diffD = (a,b) => Math.round((pd(b)-pd(a))/864e5);
-const viernesDe = s => { let d=s; while(dow(d)!==5) d=addD(d,-1); return d; }; // inicio de semana (vie)
+const viernesDe = s => { let d=s; while(dow(d)!==5) d=addD(d,-1); return d; }; // viernes anterior o igual
+const lunesDe = s => { let d=s; while(dow(d)!==1) d=addD(d,-1); return d; }; // inicio de semana (lunes a domingo)
 const MESES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 const DIAS=['dom','lun','mar','mié','jue','vie','sáb'];
 const fC = s => s ? `${pd(s).getDate()}/${pd(s).getMonth()+1}` : '';
@@ -385,8 +386,8 @@ function gastadoSemana(db,cats,ini){
 const catsDe = (db,rec) => rec.usaCatsVarios ? db.catsVarios : (rec.cats||[]);
 // Presupuesto semanal con compensación de excesos: devuelve mapa semana -> {base,descuento,presupuesto,gastado,exceso,sobrante}
 function presupuestoSemanas(db,rec,hastaIni){
-  const res={}; let carry=0; const hoyIni=viernesDe(hoyStr());
-  for(let w=viernesDe(db.fechaInicio); w<=hastaIni; w=addD(w,7)){
+  const res={}; let carry=0; const hoyIni=lunesDe(hoyStr());
+  for(let w=lunesDe(db.fechaInicio); w<=hastaIni; w=addD(w,7)){
     let base=montoVigente(rec,w);
     if(w<db.fechaInicio) base=Math.round(base*(diffD(db.fechaInicio,addD(w,6))+1)/7);
     const desc=rec.compensa?Math.min(carry,base*0.5):0; carry-=desc;
@@ -425,9 +426,9 @@ function eventosFuturos(db,hasta){
   (db.prestamos||[]).forEach(p=>{ const pen=pendientePrestamo(db,p); if(pen<=0||!p.fechaDevolucion) return; const f=at(p.fechaDevolucion); if(f>hasta) return;
     ev.push({fecha:f, tipo:'ingreso', cuenta:p.cuenta, monto:pen, desc:`Devolución de ${p.persona}`, tentativo:true, vencido:p.fechaDevolucion<hoy, prestamo:p.id}); });
   // presupuestos (lo que falta gastar de la semana actual + semanas futuras)
-  const hoyIni=viernesDe(hoy);
+  const hoyIni=lunesDe(hoy);
   db.recurrentes.filter(r=>r.tipo==='presupuesto'&&r.activo!==false).forEach(rec=>{
-    const ps=presupuestoSemanas(db,rec,viernesDe(hasta));
+    const ps=presupuestoSemanas(db,rec,lunesDe(hasta));
     Object.entries(ps).forEach(([w,p])=>{
       if(w<hoyIni) return;
       const resto=w===hoyIni?Math.max(0,p.presupuesto-p.gastado):p.presupuesto;
@@ -437,11 +438,11 @@ function eventosFuturos(db,hasta){
   });
   // aportes semanales previstos a las cajas
   (db.cajas||[]).forEach(c=>{
-    for(let w=viernesDe(hoy); w<=viernesDe(hasta); w=addD(w,7)){
+    for(let w=lunesDe(hoy); w<=lunesDe(hasta); w=addD(w,7)){
       if(db.movs.some(m=>m.tipo==='aporte'&&m.caja===c.id&&m.fecha>=w&&m.fecha<=addD(w,6))) continue;
       if((db.decisiones||{})[`aporte|${c.id}|${w}`]) continue;
       const monto=aporteSugerido(db,c,w); if(monto<=0) continue;
-      const f=w<hoy?hoy:w; if(f>hasta) continue;
+      const vie=addD(w,4); const f=vie<hoy?hoy:vie; if(f>hasta) continue;
       ev.push({fecha:f, tipo:'aporte', caja:c.id, cuenta:c.cuentaAporte||'bbva', monto, desc:`Aporte a ${c.nombre}`, tentativo:true});
     }
   });
@@ -469,7 +470,7 @@ function deudaTarjetas(db,D,hasta){
 }
 
 function cashflow(db,nSem=12){
-  const hoy=hoyStr(); const ini=viernesDe(hoy);
+  const hoy=hoyStr(); const ini=lunesDe(hoy);
   const sems=Array.from({length:nSem},(_,i)=>{const a=addD(ini,i*7);return {a,b:addD(a,6)};});
   const hasta=sems[nSem-1].b;
   const fut=eventosFuturos(db,hasta);
@@ -1124,7 +1125,7 @@ function FormPagarResumen({db,save,onClose,t,r,tot,rsAll}){
 
 // ================= INICIO =================
 function Inicio({db,save,abrir}){
-  const hoy=hoyStr(); const hoyIni=viernesDe(hoy);
+  const hoy=hoyStr(); const hoyIni=lunesDe(hoy);
   const {s}=saldosReales(db,hoy);
   const total=Object.values(s).reduce((a,b)=>a+b,0); const ahorro=totalCajas(db);
   const deuda=deudaTarjetas(db,hoy).total;
@@ -1206,8 +1207,8 @@ function Inicio({db,save,abrir}){
       <button onClick={()=>abrir('ahorro')}><span className="ic">🐷</span>Ahorro</button>
     </div>
     <div className="card">
-      <h2>Esta semana <span className="muted">vie {fC(hoyIni)} al jue {fC(addD(hoyIni,6))}</span></h2>
-      {pv&&<Bar label="Gastos varios" usado={pv.gastado} tope={pv.presupuesto} nota={pv.descuento?`${$(pv.base)} − ${$(pv.descuento)} de la semana pasada`:(pv.gastado<pv.presupuesto?`unos ${$((pv.presupuesto-pv.gastado)/diasRest)} por día hasta el jueves`:'se descuenta la próxima semana')} />}
+      <h2>Esta semana <span className="muted">lun {fC(hoyIni)} al dom {fC(addD(hoyIni,6))}</span></h2>
+      {pv&&<Bar label="Gastos varios" usado={pv.gastado} tope={pv.presupuesto} nota={pv.descuento?`${$(pv.base)} − ${$(pv.descuento)} de la semana pasada`:(pv.gastado<pv.presupuesto?`unos ${$((pv.presupuesto-pv.gastado)/diasRest)} por día hasta el domingo`:'se descuenta la próxima semana')} />}
       {pc&&<Bar label="Comida del mediodía" usado={pc.gastado} tope={pc.presupuesto} nota="" />}
       <div className="mini">Las compras con tarjeta también cuentan: la plata ya está comprometida.</div>
     </div>
@@ -1313,7 +1314,7 @@ function Movimientos({db,save,abrir}){
     ...db.consumos.filter(c=>!c.previo).map(c=>({id:c.id,kind:'consumo',fecha:c.fecha,tipo:'tarjeta',monto:enPesos(db,c.montoCuota,c.moneda)*(c.cuotas||1),usd:c.moneda==='USD'?c.montoCuota*(c.cuotas||1):0,desc:c.desc,cat:c.cat,medio:c.tarjeta,cuotas:c.cuotas,tercero:c.tercero,raw:c})),
   ].filter(m=>filtro==='todos'||(filtro==='gastos'&&(m.tipo==='gasto'||m.tipo==='tarjeta'))||(filtro==='ingresos'&&m.tipo==='ingreso')||(filtro==='otros'&&!['gasto','tarjeta','ingreso'].includes(m.tipo)))
    .sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  const grupos={}; lista.forEach(m=>{const w=viernesDe(m.fecha);(grupos[w]=grupos[w]||[]).push(m);});
+  const grupos={}; lista.forEach(m=>{const w=lunesDe(m.fecha);(grupos[w]=grupos[w]||[]).push(m);});
   const signo=m=>m.tipo==='ingreso'||m.tipo==='reintegro'||(m.tipo==='ajuste'&&m.monto>0)?1:(m.tipo==='transfer'||m.tipo==='aporte'||m.tipo==='retiro')?0:-1;
   const editar=m=>{ if(m.prestamoId){ const p=(db.prestamos||[]).find(x=>x.id===m.prestamoId); if(m.tipo==='gasto'&&p) return abrir('prestamo',{p}); if(confirm('¿Eliminar esta devolución?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); return; }
     if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.raw.montoCuota*(m.raw.cuotas||1),moneda:m.raw.moneda,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
@@ -1331,7 +1332,7 @@ function Movimientos({db,save,abrir}){
     <Prestamos db={db} abrir={abrir} todos />
     {!lista.length&&<div className="card"><div className="empty">Todavía no hay movimientos. Cargá el primer egreso con el botón de arriba.</div></div>}
     {Object.entries(grupos).sort((a,b)=>b[0].localeCompare(a[0])).map(([w,ms])=><div className="card" key={w}>
-      <h2>Semana del vie {fC(w)} <span className="muted">{$(ms.reduce((a,m)=>a+signo(m)*m.monto,0))}</span></h2>
+      <h2>Semana del lun {fC(w)} <span className="muted">{$(ms.reduce((a,m)=>a+signo(m)*m.monto,0))}</span></h2>
       {ms.map(m=><div className="row" key={m.kind+m.id} onClick={()=>editar(m)} style={{cursor:'pointer'}}>
         <div className="l"><div className="t">{m.desc}</div>
           <div className="s">{fL(m.fecha)} · {m.tipo==='aporte'?`${nombreMedio(db,m.cuenta)} → ${(db.cajas.find(c=>c.id===m.caja)||{}).nombre}`:m.tipo==='retiro'?`${(db.cajas.find(c=>c.id===m.caja)||{}).nombre} → ${nombreMedio(db,m.cuenta)}${m.motivo?` · ${m.motivo}`:''}`:m.tipo==='transfer'?`${nombreMedio(db,m.cuenta)} → ${nombreMedio(db,m.cuentaDestino)}`:nombreMedio(db,m.medio||m.cuenta)}{m.cuotas>1?` · ${m.cuotas} cuotas`:''}{m.cat?` · ${m.cat}`:''}</div>
@@ -1410,7 +1411,7 @@ function Cashflow({db}){
   const celda=(v,items,titulo,sign)=>{ const has=items&&items.length; const t=items?.some(x=>x.tentativo||x.estimado);
     return <td className={'tap'} onClick={()=>has&&setDet({titulo,items,sign})}>{v?<span className={sign>0?'pos':''}>{sign>0?'+':'−'}{$(Math.abs(v)).replace('−','')}{t&&<span className="muted"> ?</span>}</span>:<span className="muted">—</span>}</td>; };
   return <div>
-    <div className="muted" style={{margin:'0 4px 8px'}}>Semanas de viernes a jueves, como el cobro. Tocá una celda para ver el detalle. "?" = estimado o a confirmar.</div>
+    <div className="muted" style={{margin:'0 4px 8px'}}>Semanas de lunes a domingo. Tocá una celda para ver el detalle. "?" = estimado o a confirmar.</div>
     <div className="cfwrap"><table className="cf">
       <thead><tr><th className="stick">Semana</th>{C.map(c=><th key={c.a} className={c.i===0?'cur':''}>{fC(c.a)}–{fC(c.b)}{c.det.pagos.length?<div className="neg" style={{fontSize:10}}>vence tarjeta</div>:null}</th>)}</tr></thead>
       <tbody>
