@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="JENT Finanzas">
 <title>JENT Finanzas</title>
-<!-- v16: cajas de ahorro y jubilación, efectivo -->
+<!-- v17: dólar BNA, resúmenes en pesos y dólares, deshacer PDF -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -229,6 +229,16 @@ function datosIniciales(){
   };
 }
 
+// ================= DÓLAR =================
+const dolarHoy = db => (db.dolar&&db.dolar.venta)||0;
+const enPesos = (db,monto,moneda) => moneda==='USD'?monto*dolarHoy(db):monto;
+const $u = n => 'U$S '+(Math.round((n||0)*100)/100).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+async function traerDolarBNA(){
+  const urls=['https://dolarapi.com/v1/ambito/dolares/bna','https://dolarapi.com/v1/dolares/oficial'];
+  for(const u of urls){ try{ const r=await fetch(u); if(!r.ok) continue; const j=await r.json(); if(j&&j.venta>0) return {venta:j.venta,compra:j.compra,fecha:hoyStr(),actualizado:j.fechaActualizacion||null,fuente:u.includes('bna')?'Banco Nación':'Oficial',auto:true}; }catch(e){} }
+  return null;
+}
+
 // ================= MOTOR =================
 const esTarjeta = (db,id) => db.tarjetas.some(t=>t.id===id);
 const nombreMedio = (db,id) => (db.cuentas.find(c=>c.id===id)||db.tarjetas.find(t=>t.id===id)||{nombre:id}).nombre;
@@ -306,7 +316,7 @@ function itemsTarjeta(db,t,hasta){
   db.consumos.filter(c=>c.tarjeta===t.id).forEach(c=>{
     const rest=(c.cuotas||1)-(c.cuotasPagadas||0); let i0=c.resumenInicial?rs.findIndex(r=>r.id===c.resumenInicial):-1; if(i0<0) i0=idx(c.fecha);
     for(let k=0;k<rest;k++){ const r=rs[i0+k]; if(!r) break;
-      items.push({previo:!!c.previo, fechaCompra:c.fecha, desc:c.desc+((c.cuotas||1)>1?` (${(c.cuotasPagadas||0)+k+1}/${c.cuotas})`:''), monto:c.montoCuota, tercero:!!c.tercero, resumenId:r.id, consumoId:c.id, cat:c.cat, cuotaN:k, real:true});
+      items.push({previo:!!c.previo, fechaCompra:c.fecha, desc:c.desc+((c.cuotas||1)>1?` (${(c.cuotasPagadas||0)+k+1}/${c.cuotas})`:''), monto:enPesos(db,c.montoCuota,c.moneda), usd:c.moneda==='USD'?c.montoCuota:0, tercero:!!c.tercero, resumenId:r.id, consumoId:c.id, cat:c.cat, cuotaN:k, real:true});
     }
   });
   // recurrentes con tarjeta todavía no registrados
@@ -315,15 +325,20 @@ function itemsTarjeta(db,t,hasta){
   });
   // ajustes de resúmenes confirmados y saldos impagos
   rs.forEach((r,i)=>{
-    if(r.ajuste) items.push({fechaCompra:r.cierre, desc:'Ajuste al confirmar (impuestos, intereses, diferencias)', monto:r.ajuste, resumenId:r.id, ajuste:true});
-    if(r.pagado && r.saldoImpago>0 && rs[i+1]) items.push({fechaCompra:r.vencimiento, desc:'Saldo impago del resumen anterior', monto:r.saldoImpago, resumenId:rs[i+1].id, arrastre:true});
+    if(r.ajuste) items.push({fechaCompra:r.cierre, desc:'Ajuste al confirmar (impuestos, intereses, diferencias)', monto:r.ajuste, usd:0, resumenId:r.id, ajuste:true});
+    if(r.ajusteUSD) items.push({fechaCompra:r.cierre, desc:'Ajuste en dólares al confirmar', monto:r.ajusteUSD*dolarHoy(db), usd:r.ajusteUSD, resumenId:r.id, ajuste:true});
+    if(r.pagado && r.saldoImpago>0 && rs[i+1]) items.push({fechaCompra:r.vencimiento, desc:'Saldo impago del resumen anterior', monto:r.saldoImpago, usd:0, resumenId:rs[i+1].id, arrastre:true});
+    if(r.pagado && r.saldoImpagoUSD>0 && rs[i+1]) items.push({fechaCompra:r.vencimiento, desc:'Saldo impago en dólares del resumen anterior', monto:r.saldoImpagoUSD*dolarHoy(db), usd:r.saldoImpagoUSD, resumenId:rs[i+1].id, arrastre:true});
   });
   return {rs,items};
 }
 function totalesResumen(items,rid){
   const it=items.filter(x=>x.resumenId===rid);
-  return {propio:it.filter(x=>!x.tercero).reduce((a,b)=>a+b.monto,0), terceros:it.filter(x=>x.tercero).reduce((a,b)=>a+b.monto,0), items:it};
+  const prop=it.filter(x=>!x.tercero); const usd=prop.reduce((a,b)=>a+(b.usd||0),0); const propio=prop.reduce((a,b)=>a+b.monto,0);
+  return {propio, usd, pesos:propio-prop.filter(x=>x.usd).reduce((a,b)=>a+b.monto,0), terceros:it.filter(x=>x.tercero).reduce((a,b)=>a+b.monto,0), items:it};
 }
+
+const textoResumen = (tot) => tot.usd>0.004 ? `${$(tot.pesos)} + ${$u(tot.usd)}` : $(tot.propio);
 
 // Saldos reales
 // Cajas de ahorro: valor = último valor cargado + aportes − retiros posteriores (o aportes netos si nunca se actualizó)
@@ -361,7 +376,7 @@ function saldosReales(db,hasta){
 function gastadoSemana(db,cats,ini){
   const fin=addD(ini,6);
   const m=db.movs.filter(x=>x.tipo==='gasto'&&cats.includes(x.cat)&&x.fecha>=ini&&x.fecha<=fin).reduce((a,b)=>a+b.monto,0);
-  const t=db.consumos.filter(x=>!x.tercero&&!x.previo&&cats.includes(x.cat)&&x.fecha>=ini&&x.fecha<=fin).reduce((a,b)=>a+b.montoCuota*((b.cuotas||1)-(b.cuotasPagadas||0)),0);
+  const t=db.consumos.filter(x=>!x.tercero&&!x.previo&&cats.includes(x.cat)&&x.fecha>=ini&&x.fecha<=fin).reduce((a,b)=>a+enPesos(db,b.montoCuota,b.moneda)*((b.cuotas||1)-(b.cuotasPagadas||0)),0);
   return m+t;
 }
 const catsDe = (db,rec) => rec.usaCatsVarios ? db.catsVarios : (rec.cats||[]);
@@ -544,24 +559,27 @@ function Bar({label,usado,tope,nota}){
 // ================= FORMULARIOS =================
 function FormGasto({db,save,onClose,inicial,abrir}){
   const ed=inicial||{};
-  const [v,setV]=useState({monto:ed.monto??'',desc:ed.desc||'',cat:ed.cat||'PedidosYa',medio:ed.medio||'bbva',cuotas:ed.cuotas||1,fecha:ed.fecha||hoyStr(),tercero:!!ed.tercero});
+  const [v,setV]=useState({monto:ed.monto??'',desc:ed.desc||'',cat:ed.cat||'PedidosYa',medio:ed.medio||'bbva',cuotas:ed.cuotas||1,fecha:ed.fecha||hoyStr(),tercero:!!ed.tercero,moneda:ed.moneda||'ARS'});
   const tarjeta=esTarjeta(db,v.medio);
   const ok=()=>{
     const m=num(v.monto); if(m<=0) return;
     let d={...db};
     if(ed.kind==='mov') d.movs=d.movs.filter(x=>x.id!==ed.id);
     if(ed.kind==='consumo') d.consumos=d.consumos.filter(x=>x.id!==ed.id);
-    if(tarjeta){ const c=Math.max(1,parseInt(v.cuotas)||1); d.consumos=[...d.consumos,{id:ed.kind==='consumo'?ed.id:uid(),tarjeta:v.medio,fecha:v.fecha,desc:v.desc||v.cat,cat:v.cat,montoCuota:Math.round(m/c*100)/100,cuotas:c,cuotasPagadas:0,tercero:v.tercero}]; }
+    if(tarjeta){ const c=Math.max(1,parseInt(v.cuotas)||1); const orig=ed.kind==='consumo'?(db.consumos.find(x=>x.id===ed.id)||{}):{};
+      d.consumos=[...d.consumos,{...orig,id:ed.kind==='consumo'?ed.id:uid(),tarjeta:v.medio,fecha:v.fecha,desc:v.desc||v.cat,cat:v.cat,montoCuota:Math.round(m/c*100)/100,cuotas:c,cuotasPagadas:orig.cuotas===c?(orig.cuotasPagadas||0):0,tercero:v.tercero,moneda:v.moneda==='USD'?'USD':undefined}]; }
     else d.movs=[...d.movs,{id:ed.kind==='mov'?ed.id:uid(),fecha:v.fecha,tipo:'gasto',monto:m,cuenta:v.medio,desc:v.desc||v.cat,cat:v.cat}];
     save(d); onClose();
   };
   return <Sheet title={ed.id?'Editar egreso':'Registrar egreso'} onClose={onClose}><div className="form">
     {!ed.id&&abrir&&<button className="btn sm" style={{justifySelf:'start'}} onClick={()=>abrir('prestamo')}>¿Prestaste plata? Registrala como préstamo</button>}
-    <F label="Monto total"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
+    <F label={`Monto total${tarjeta&&v.moneda==='USD'?' en dólares':''}`}><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
     <F label="Pagado con"><SelMedio db={db} value={v.medio} onChange={x=>setV({...v,medio:x})} /></F>
+    {tarjeta&&<div className="seg">{[['ARS','En pesos'],['USD','En dólares (U$S)']].map(([k,l])=><button key={k} className={v.moneda===k?'on':''} onClick={()=>setV({...v,moneda:k})}>{l}</button>)}</div>}
+    {tarjeta&&v.moneda==='USD'&&<div className="mini">{dolarHoy(db)?`≈ ${$(num(v.monto)*dolarHoy(db))} al dólar BNA de hoy (${$(dolarHoy(db))}). Se recalcula con la cotización del día.`:'Cargá la cotización del dólar en Ajustes para verlo en pesos.'}</div>}
     {tarjeta&&<div className="two">
       <F label="Cuotas"><input inputMode="numeric" value={v.cuotas} onChange={e=>setV({...v,cuotas:e.target.value})} /></F>
-      <F label="Valor de cada cuota"><input disabled value={$(num(v.monto)/Math.max(1,parseInt(v.cuotas)||1))} /></F>
+      <F label="Valor de cada cuota"><input disabled value={v.moneda==='USD'?$u(num(v.monto)/Math.max(1,parseInt(v.cuotas)||1)):$(num(v.monto)/Math.max(1,parseInt(v.cuotas)||1))} /></F>
     </div>}
     <F label="Categoría"><select value={v.cat} onChange={e=>setV({...v,cat:e.target.value})}>
       <optgroup label="Gastos varios (cuentan en la barra semanal)">{db.catsVarios.map(c=><option key={c}>{c}</option>)}</optgroup>
@@ -832,8 +850,7 @@ function parseBBVA(L){
   const usdCons=consumos.reduce((a,x)=>a+x.usd,0);
   const base=(T.match(/IVA RG 4240 21%\(\s*([\d.]+,?\d*)\s*\)/)||[])[1];
   const tc=base&&usdCons?nAR(base)/usdCons:null;
-  consumos.forEach(x=>{ if(x.usd){ x.monto=tc?Math.round(x.usd*tc*100)/100:0; x.nota=`U$S ${String(x.usd).replace('.',',')}${tc?` (≈ $${Math.round(tc)} por dólar)`:''}`; } });
-  const total=pesos===null?null:Math.round((pesos+(usd&&tc?usd*tc:0))*100)/100;
+  const total=pesos;
   return {banco:'bbva',cierre,vencimiento,proxCierre,proxVenc,cierreAnterior,total,totalPesos:pesos,totalUSD:usd,tipoCambio:tc,consumos,cargos};
 }
 
@@ -920,6 +937,28 @@ function conciliar(db,t,rid,pdf){
   return {ok,nuevos,faltan,cargos};
 }
 
+function deshacerResumen(db,t,rid){
+  const tt=db.tarjetas.find(x=>x.id===t.id); const r=tt.resumenes.find(x=>x.id===rid); if(!r) return db;
+  const L=r.deshacer; let d={...db};
+  if(L){
+    const fuera=new Set([...(L.agregados||[]),...(L.materializados||[])]);
+    d.consumos=d.consumos.filter(c=>!fuera.has(c.id)).map(c=>{ const mv=(L.movidos||[]).find(x=>x.id===c.id); return mv?{...c,resumenInicial:mv.prev||undefined}:c; });
+    d.consumos=[...d.consumos,...(L.eliminados||[])];
+    const oc={...d.ocurr}; Object.entries(L.ocurrPrev||{}).forEach(([k,v])=>{ if(v) oc[k]=v; else delete oc[k]; }); d.ocurr=oc;
+    d.tarjetas=d.tarjetas.map(x=>{ if(x.id!==t.id) return x; let rs=x.resumenes.filter(y=>y.id!==rid&&y.id!==L.sigId);
+      if(L.resumenPrev) rs.push(L.resumenPrev); else rs.push({id:r.id,cierre:r.cierre,vencimiento:r.vencimiento});
+      if(L.sigId&&L.sigPrev) rs.push(L.sigPrev);
+      return {...x,resumenes:rs.sort((a,b)=>a.cierre.localeCompare(b.cierre))}; });
+  } else {
+    // resúmenes cargados antes de que existiera el deshacer: se quitan los consumos del PDF y las suscripciones confirmadas
+    const quitar=d.consumos.filter(c=>c.tarjeta===t.id&&c.resumenInicial===rid&&(c.desdePDF||c.recKey));
+    const oc={...d.ocurr}; quitar.filter(c=>c.recKey).forEach(c=>{ const x={...(oc[c.recKey]||{})}; delete x.estado; delete x.consumoId; delete x.monto; delete x.fecha; oc[c.recKey]=x; });
+    d.ocurr=oc; d.consumos=d.consumos.filter(c=>!quitar.includes(c));
+    d.tarjetas=d.tarjetas.map(x=>x.id!==t.id?x:{...x,resumenes:x.resumenes.map(y=>{ if(y.id!==rid) return y; const z={...y}; ['confirmado','ajuste','ajusteUSD','totalPDF','totalUSDPDF','cargosPDF','deshacer'].forEach(k=>delete z[k]); return z; })});
+  }
+  return d;
+}
+
 function FormResumenPDF({db,save,onClose,t}){
   const [estado,setEstado]=useState({paso:'elegir'});
   const fileRef=useRef();
@@ -933,11 +972,12 @@ function FormResumenPDF({db,save,onClose,t}){
       const r=[...rs].sort((a,b)=>Math.abs(diffD(a.cierre,pdf.cierre))-Math.abs(diffD(b.cierre,pdf.cierre)))[0];
       if(!r||Math.abs(diffD(r.cierre,pdf.cierre))>10) return setEstado({paso:'error',msg:`El resumen cierra el ${fL(pdf.cierre)} y no coincide con ningún período de esta tarjeta.`});
       if(r.pagado&&r.confirmado) return setEstado({paso:'error',msg:`Ese resumen (cierre ${fC(r.cierre)}) ya está confirmado y pagado.`});
+      const dol=dolarHoy(db); pdf.consumos.forEach(x=>{ if(x.usd){ x.monto=Math.round(x.usd*dol*100)/100; x.nota=$u(x.usd); } });
       const conc=conciliar(db,t,r.id,pdf);
       const idx=rs.findIndex(x=>x.id===r.id);
       setEstado({paso:'revisar',pdf,r,conc,rs,sig:rs[idx+1],prevCierre:pdf.cierreAnterior||rs[idx-1]?.cierre||addD(pdf.cierre,-31),
         otroBanco:esperado&&pdf.banco!==esperado,
-        v:{total:pdf.total!=null?String(pdf.total).replace('.',','):'',cierre:pdf.cierre,venc:pdf.vencimiento||r.vencimiento,sigCierre:pdf.proxCierre||'',sigVenc:pdf.proxVenc||''}});
+        v:{total:pdf.total!=null?String(pdf.total).replace('.',','):'',usd:String(pdf.totalUSD||0).replace('.',','),cierre:pdf.cierre,venc:pdf.vencimiento||r.vencimiento,sigCierre:pdf.proxCierre||'',sigVenc:pdf.proxVenc||''}});
     }catch(e){ setEstado({paso:'error',msg:e.message||'No se pudo leer el archivo.'}); }
   };
   if(estado.paso!=='revisar') return <Sheet title={`Cargar resumen ${t.nombre}`} onClose={onClose}><div className="form">
@@ -956,21 +996,25 @@ function FormResumenPDF({db,save,onClose,t}){
   const propio=num(v.total)-terceros;
   const cargosTot=conc.cargos.reduce((a,c)=>a+c.monto,0);
   const confirmar=()=>{
-    let d={...db};
-    conc.ok.filter(x=>x.a.proyectado).forEach(x=>{ d=materializar(d,t,x.a,x.pc.monto,r.id); });
-    const nuevosC=conc.nuevos.filter(n=>n.incluir).map(n=>({id:uid(),tarjeta:t.id,fecha:n.pc.fecha,desc:n.pc.desc+(n.pc.nota?` (${n.pc.nota})`:''),cat:n.cat,montoCuota:n.pc.monto,cuotas:n.pc.cuotas||1,cuotasPagadas:(n.pc.cuota||1)-1,tercero:n.tercero,resumenInicial:r.id,previo:n.pc.fecha<=prevCierre,desdePDF:true}));
+    let d={...db}; const log={agregados:[],materializados:[],movidos:[],eliminados:[],omitidos:[],ocurrPrev:{}};
+    const tt0=db.tarjetas.find(x=>x.id===t.id); const rPrev=tt0.resumenes.find(x=>x.id===r.id)||null; const sPrev=sig?(tt0.resumenes.find(x=>x.id===sig.id)||null):null;
+    conc.ok.filter(x=>x.a.proyectado).forEach(x=>{ log.ocurrPrev[x.a.key]=db.ocurr[x.a.key]||null; const antes=d.consumos.length; d=materializar(d,t,x.a,x.a.usd?x.a.monto:x.pc.monto,r.id); log.materializados.push(d.consumos[antes].id); });
+    const nuevosC=conc.nuevos.filter(n=>n.incluir).map(n=>({id:uid(),tarjeta:t.id,fecha:n.pc.fecha,desc:n.pc.desc,cat:n.cat,montoCuota:n.pc.usd?n.pc.usd:n.pc.monto,moneda:n.pc.usd?'USD':undefined,cuotas:n.pc.cuotas||1,cuotasPagadas:(n.pc.cuota||1)-1,tercero:n.tercero,resumenInicial:r.id,previo:n.pc.fecha<=prevCierre,desdePDF:true}));
+    log.agregados=nuevosC.map(c=>c.id);
     d.consumos=[...d.consumos,...nuevosC];
     conc.faltan.forEach(f=>{
-      if(f.a.proyectado){ if(f.accion==='omitir') d.ocurr={...d.ocurr,[f.a.key]:{estado:'omitido'}}; return; }
-      if(f.accion==='mover'&&sig) d.consumos=d.consumos.map(c=>c.id===f.a.consumoId?{...c,resumenInicial:sig.id}:c);
-      if(f.accion==='eliminar') d.consumos=d.consumos.filter(c=>c.id!==f.a.consumoId);
+      if(f.a.proyectado){ if(f.accion==='omitir'){ log.ocurrPrev[f.a.key]=db.ocurr[f.a.key]||null; d.ocurr={...d.ocurr,[f.a.key]:{estado:'omitido'}}; } return; }
+      const c0=d.consumos.find(c=>c.id===f.a.consumoId);
+      if(f.accion==='mover'&&sig&&c0){ log.movidos.push({id:c0.id,prev:c0.resumenInicial||null}); d.consumos=d.consumos.map(c=>c.id===f.a.consumoId?{...c,resumenInicial:sig.id}:c); }
+      if(f.accion==='eliminar'&&c0){ log.eliminados.push(c0); d.consumos=d.consumos.filter(c=>c.id!==f.a.consumoId); }
     });
-    // ajuste: diferencia entre el total real (tu parte) y lo que queda registrado en ese resumen
-    const tt=d.tarjetas.find(x=>x.id===t.id);
-    const tmp=updRes(d,t.id,r.id,{ajuste:0},estado.rs);
+    // ajustes: diferencia entre los saldos del resumen (tu parte) y lo registrado, en pesos y en dólares
+    const tmp=updRes(d,t.id,r.id,{ajuste:0,ajusteUSD:0},estado.rs);
     const {items}=itemsTarjeta(tmp,tmp.tarjetas.find(x=>x.id===t.id),addD(hoy,200));
-    const base=items.filter(x=>x.resumenId===r.id&&!x.tercero&&!x.ajuste).reduce((a,b)=>a+b.monto,0);
-    d=updRes(d,t.id,r.id,{confirmado:true,estimado:false,cierre:v.cierre,vencimiento:v.venc,ajuste:Math.round((propio-base)*100)/100,totalPDF:num(v.total),cargosPDF:conc.cargos},estado.rs);
+    const its=items.filter(x=>x.resumenId===r.id&&!x.tercero&&!x.ajuste);
+    const basePesos=its.filter(x=>!x.usd).reduce((a,b)=>a+b.monto,0), baseUSD=its.reduce((a,b)=>a+(b.usd||0),0);
+    d=updRes(d,t.id,r.id,{confirmado:true,estimado:false,cierre:v.cierre,vencimiento:v.venc,ajuste:Math.round((propio-basePesos)*100)/100,ajusteUSD:Math.round((num(v.usd)-baseUSD)*100)/100,totalPDF:num(v.total),totalUSDPDF:num(v.usd),cargosPDF:conc.cargos,
+      deshacer:{...log,resumenPrev:rPrev,sigId:sig?.id||null,sigPrev:sPrev}},estado.rs);
     d=fijarSiguiente(d,t,sig?.id,v.sigCierre,v.sigVenc);
     save(d); onClose();
   };
@@ -978,7 +1022,9 @@ function FormResumenPDF({db,save,onClose,t}){
     {estado.otroBanco&&<div className="alert d"><div className="b">Este PDF parece de otra tarjeta. Revisá que estés cargándolo en {t.nombre}.</div></div>}
     <div className="two"><F label="Cierre"><input type="date" value={v.cierre} onChange={e=>setV({cierre:e.target.value})} /></F>
       <F label="Vencimiento"><input type="date" value={v.venc} onChange={e=>setV({venc:e.target.value})} /></F></div>
-    <F label={`Total a pagar${pdf.totalUSD?` (incluye U$S ${String(pdf.totalUSD).replace('.',',')} pasados a pesos)`:''}`}><MontoInput value={v.total} onChange={x=>setV({total:x})} /></F>
+    <div className="two"><F label="Saldo en pesos"><MontoInput value={v.total} onChange={x=>setV({total:x})} /></F>
+      <F label="Saldo en dólares"><MontoInput value={v.usd} onChange={x=>setV({usd:x})} /></F></div>
+    {num(v.usd)>0&&<div className="mini">Los consumos en dólares se muestran en pesos al dólar BNA de hoy ({$(dolarHoy(db))}).</div>}
     {terceros>0&&<div className="muted">Tu parte: {$(propio)} · de terceros: {$(terceros)}</div>}
     <div className="two"><F label="Próximo cierre"><input type="date" value={v.sigCierre} onChange={e=>setV({sigCierre:e.target.value})} /></F>
       <F label="Próximo vencimiento"><input type="date" value={v.sigVenc} onChange={e=>setV({sigVenc:e.target.value})} /></F></div>
@@ -1014,17 +1060,17 @@ function FormResumenPDF({db,save,onClose,t}){
 
 function FormConfirmar({db,save,onClose,t,r,tot,rsAll}){
   const sig=rsAll[rsAll.findIndex(x=>x.id===r.id)+1];
-  const base=tot.propio-(r.ajuste||0);
-  const [v,setV]=useState({total:Math.round(tot.propio),venc:r.vencimiento,sigCierre:sig?.cierre||'',sigVenc:sig?.vencimiento||''});
-  const ok=()=>{ const real=num(v.total);
+  const basePesos=tot.pesos-(r.ajuste||0), baseUSD=tot.usd-(r.ajusteUSD||0);
+  const [v,setV]=useState({total:Math.round(tot.pesos),usd:String(Math.round(tot.usd*100)/100).replace('.',','),venc:r.vencimiento,sigCierre:sig?.cierre||'',sigVenc:sig?.vencimiento||''});
+  const ok=()=>{
     let d=db; tot.items.filter(x=>x.proyectado).forEach(x=>{ d=materializar(d,t,x,x.monto,r.id); });
-    d=updRes(d,t.id,r.id,{confirmado:true,vencimiento:v.venc,ajuste:Math.round((real-base)*100)/100,estimado:false},rsAll);
-    if(sig&&v.sigCierre&&v.sigVenc){ const tt=d.tarjetas.find(x=>x.id===t.id); const ex=tt.resumenes.find(x=>x.id===sig.id);
-      d={...d,tarjetas:d.tarjetas.map(x=>x.id!==t.id?x:{...x,resumenes:[...x.resumenes.filter(y=>y.id!==sig.id),{...(ex||{}),id:sig.id,cierre:v.sigCierre,vencimiento:v.sigVenc}].sort((a,b)=>a.cierre.localeCompare(b.cierre))})}; }
+    d=updRes(d,t.id,r.id,{confirmado:true,vencimiento:v.venc,ajuste:Math.round((num(v.total)-basePesos)*100)/100,ajusteUSD:Math.round((num(v.usd)-baseUSD)*100)/100,estimado:false},rsAll);
+    d=fijarSiguiente(d,t,sig?.id,v.sigCierre,v.sigVenc);
     save(d); onClose(); };
   return <Sheet title={`Confirmar resumen ${t.nombre}`} onClose={onClose}><div className="form">
-    <div className="muted">Copiá los datos del resumen que te llegó. La diferencia con lo registrado ({$(base)}) se carga como ajuste: impuestos, intereses o algo que faltó.</div>
-    <F label="Total a pagar (tu parte, sin consumos de terceros)"><MontoInput value={v.total} onChange={x=>setV({...v,total:x})} autoFocus /></F>
+    <div className="muted">Copiá los datos del resumen. La diferencia con lo registrado ({$(basePesos)}{baseUSD?` + ${$u(baseUSD)}`:''}) queda como ajuste: impuestos, intereses o algo que faltó.</div>
+    <div className="two"><F label="Saldo en pesos (tu parte)"><MontoInput value={v.total} onChange={x=>setV({...v,total:x})} autoFocus /></F>
+      <F label="Saldo en dólares"><MontoInput value={v.usd} onChange={x=>setV({...v,usd:x})} /></F></div>
     {tot.terceros>0&&<div className="muted">Además el resumen trae {$(tot.terceros)} de consumos de terceros.</div>}
     <F label="Vencimiento"><input type="date" value={v.venc} onChange={e=>setV({...v,venc:e.target.value})} /></F>
     {sig&&<><div className="muted" style={{marginTop:4}}>Próximo período (figura en el resumen):</div>
@@ -1035,17 +1081,22 @@ function FormConfirmar({db,save,onClose,t,r,tot,rsAll}){
 }
 
 function FormPagarResumen({db,save,onClose,t,r,tot,rsAll}){
-  const [v,setV]=useState({monto:Math.round(tot.propio),cuenta:t.cuentaPago,fecha:hoyStr(),reintegro:tot.terceros>0,cuentaReint:t.cuentaPago});
-  const ok=()=>{ const m=num(v.monto); if(m<0) return;
+  const dol=dolarHoy(db);
+  const [v,setV]=useState({monto:Math.round(tot.pesos),usd:String(Math.round(tot.usd*100)/100).replace('.',','),pesosUSD:Math.round(tot.usd*dol),cuenta:t.cuentaPago,fecha:hoyStr(),reintegro:tot.terceros>0,cuentaReint:t.cuentaPago});
+  const ok=()=>{ const m=num(v.monto), mu=num(v.usd), pu=tot.usd>0?num(v.pesosUSD):0; if(m<0||mu<0) return;
     const movs=[...db.movs]; const tercerosPagados=tot.terceros>0?tot.terceros:0;
-    movs.push({id:uid(),fecha:v.fecha,tipo:'pagoResumen',monto:m+tercerosPagados,montoPropio:m,cuenta:v.cuenta,tarjeta:t.id,resumenId:r.id,desc:`Pago resumen ${t.nombre} (${fC(r.vencimiento)})`});
+    movs.push({id:uid(),fecha:v.fecha,tipo:'pagoResumen',monto:m+pu+tercerosPagados,montoPropio:m+pu,pagoUSD:mu,pesosUSD:pu,cuenta:v.cuenta,tarjeta:t.id,resumenId:r.id,desc:`Pago resumen ${t.nombre} (${fC(r.vencimiento)})${mu?` · incluye ${$u(mu)}`:''}`});
     if(tercerosPagados&&v.reintegro) movs.push({id:uid(),fecha:v.fecha,tipo:'reintegro',monto:tercerosPagados,cuenta:v.cuentaReint,desc:'Reintegro de terceros (consumos ajenos en la tarjeta)'});
-    let d={...db,movs}; d=updRes(d,t.id,r.id,{pagado:true,fechaPago:v.fecha,montoPagado:m,saldoImpago:Math.max(0,Math.round((tot.propio-m)*100)/100)},rsAll);
+    let d={...db,movs}; d=updRes(d,t.id,r.id,{pagado:true,fechaPago:v.fecha,montoPagado:m,pagoUSD:mu,saldoImpago:Math.max(0,Math.round((tot.pesos-m)*100)/100),saldoImpagoUSD:Math.max(0,Math.round((tot.usd-mu)*100)/100)},rsAll);
     save(d); onClose(); };
+  const falta=num(v.monto)<tot.pesos-1||num(v.usd)<tot.usd-0.01;
   return <Sheet title={`Pagar resumen ${t.nombre}`} onClose={onClose}><div className="form">
-    <div className="muted">Vence {fL(r.vencimiento)}. Tu parte: {$(tot.propio)}{tot.terceros>0?` + ${$(tot.terceros)} de terceros = ${$(tot.propio+tot.terceros)} en total`:''}.</div>
-    <F label="Pago de tu parte"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
-    {num(v.monto)<tot.propio&&<div className="alert d"><div className="b">Pagar menos del total genera intereses (más de 6% mensual). Lo que no pagues pasa al próximo resumen.</div></div>}
+    <div className="muted">Vence {fL(r.vencimiento)}. Tu parte: {textoResumen(tot)}{tot.terceros>0?` + ${$(tot.terceros)} de terceros`:''}.</div>
+    <F label="Pago en pesos"><MontoInput value={v.monto} onChange={x=>setV({...v,monto:x})} autoFocus /></F>
+    {tot.usd>0&&<div className="two"><F label="Pago en dólares"><MontoInput value={v.usd} onChange={x=>setV({...v,usd:x,pesosUSD:Math.round(num(x)*dol)})} /></F>
+      <F label="Te costaron (pesos)"><MontoInput value={v.pesosUSD} onChange={x=>setV({...v,pesosUSD:x})} /></F></div>}
+    {tot.usd>0&&<div className="mini">{dol?`Calculado al dólar BNA de hoy (${$(dol)}). Si los compraste a otro valor, corregilo.`:'Cargá la cotización del dólar en Ajustes.'}</div>}
+    {falta&&<div className="alert d"><div className="b">Pagar menos del total genera intereses (más de 6% mensual). Lo que no pagues pasa al próximo resumen.</div></div>}
     <F label="Pagado desde"><SelMedio db={db} soloCuentas value={v.cuenta} onChange={x=>setV({...v,cuenta:x})} /></F>
     {tot.terceros>0&&<><label className="check"><input type="checkbox" checked={v.reintegro} onChange={e=>setV({...v,reintegro:e.target.checked})} /> Ya recibí la plata de los consumos de terceros</label>
       {v.reintegro&&<F label="La recibí en"><SelMedio db={db} soloCuentas value={v.cuentaReint} onChange={x=>setV({...v,cuentaReint:x})} /></F>}</>}
@@ -1089,8 +1140,9 @@ function Inicio({db,save,abrir}){
     if(prox){ const tot=totalesResumen(items,prox.id); const dd=diffD(hoy,prox.vencimiento);
       const disp=saldoCuentaAntes(db,t.cuentaPago,prox.vencimiento,prox.id);
       const falta=tot.propio-disp; const cls=dd<0?'d':dd===0?'d':dd<=5?'w':'i';
-      alerts.push({k:'v'+t.id,cls,h:`${t.nombre}: ${$(tot.propio)} ${dd<0?`venció hace ${-dd} días`:dd===0?'vence hoy':`vence ${fL(prox.vencimiento)} (en ${dd} días)`}`,
-        b:<>{tot.terceros>0&&<div>Además {$(tot.terceros)} de terceros (te los tienen que transferir).</div>}
+      alerts.push({k:'v'+t.id,cls,h:`${t.nombre}: ${textoResumen(tot)} ${dd<0?`venció hace ${-dd} días`:dd===0?'vence hoy':`vence ${fL(prox.vencimiento)} (en ${dd} días)`}`,
+        b:<>{tot.usd>0.004&&<div>Los {$u(tot.usd)} son unos {$(tot.usd*dolarHoy(db))} al dólar BNA de hoy (total ≈ {$(tot.propio)}).</div>}
+          {tot.terceros>0&&<div>Además {$(tot.terceros)} de terceros (te los tienen que transferir).</div>}
           <div>Se paga desde {nombreMedio(db,t.cuentaPago)}: {falta>0?<b className="neg">ese día vas a tener {$(disp)}, faltan {$(falta)}. Transferí antes.</b>:<span>ese día vas a tener {$(disp)}, alcanza.</span>}</div>
           {!prox.confirmado&&<div className="mini">Monto estimado hasta que confirmes el resumen.</div>}</>,
         acc:[['Pagar',()=>abrir('pagarResumen',{t,r:prox,tot,rsAll:rs})],...(falta>0?[['Transferir',()=>abrir('transfer')]]:[])]});
@@ -1129,6 +1181,7 @@ function Inicio({db,save,abrir}){
       <div className="accs">{db.cuentas.map(c=><div key={c.id} className="acc"><div className="n"><span className="dot" style={{background:c.color}}></span>{c.nombre}</div><div className="v">{$(s[c.id])}</div></div>)}</div>
       <div className="sub"><span>Con ahorros {$(total+ahorro)}</span>{totalTeDeben(db)>0&&<span>Te deben {$(totalTeDeben(db))}</span>}<span>Deuda tarjetas {$(deuda)}</span></div>
     </div>
+    <Cajas db={db} abrir={abrir} />
     <div className="fab">
       <button onClick={()=>abrir('gasto')}><span className="ic">➖</span>Egreso</button>
       <button onClick={()=>abrir('ingreso')}><span className="ic">➕</span>Ingreso</button>
@@ -1144,7 +1197,6 @@ function Inicio({db,save,abrir}){
     {alerts.length>0&&<div className="card"><h2>Avisos</h2>
       {alerts.map(a=><div key={a.k} className={'alert '+a.cls}><div className="h">{a.h}</div><div className="b">{a.b}</div>{a.acc&&<div className="btns" style={{marginTop:8}}>{a.acc.map(([l,fn])=><button key={l} className="btn sm" onClick={fn}>{l}</button>)}</div>}</div>)}
     </div>}
-    <Cajas db={db} abrir={abrir} />
     <Prestamos db={db} abrir={abrir} />
   </div>;
 }
@@ -1245,13 +1297,13 @@ function Movimientos({db,save,abrir}){
   const [filtro,setFiltro]=useState('todos');
   const lista=[
     ...db.movs.map(m=>({...m,kind:'mov'})),
-    ...db.consumos.filter(c=>!c.previo).map(c=>({id:c.id,kind:'consumo',fecha:c.fecha,tipo:'tarjeta',monto:c.montoCuota*(c.cuotas||1),desc:c.desc,cat:c.cat,medio:c.tarjeta,cuotas:c.cuotas,tercero:c.tercero,raw:c})),
+    ...db.consumos.filter(c=>!c.previo).map(c=>({id:c.id,kind:'consumo',fecha:c.fecha,tipo:'tarjeta',monto:enPesos(db,c.montoCuota,c.moneda)*(c.cuotas||1),usd:c.moneda==='USD'?c.montoCuota*(c.cuotas||1):0,desc:c.desc,cat:c.cat,medio:c.tarjeta,cuotas:c.cuotas,tercero:c.tercero,raw:c})),
   ].filter(m=>filtro==='todos'||(filtro==='gastos'&&(m.tipo==='gasto'||m.tipo==='tarjeta'))||(filtro==='ingresos'&&m.tipo==='ingreso')||(filtro==='otros'&&!['gasto','tarjeta','ingreso'].includes(m.tipo)))
    .sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const grupos={}; lista.forEach(m=>{const w=viernesDe(m.fecha);(grupos[w]=grupos[w]||[]).push(m);});
   const signo=m=>m.tipo==='ingreso'||m.tipo==='reintegro'||(m.tipo==='ajuste'&&m.monto>0)?1:(m.tipo==='transfer'||m.tipo==='aporte'||m.tipo==='retiro')?0:-1;
   const editar=m=>{ if(m.prestamoId){ const p=(db.prestamos||[]).find(x=>x.id===m.prestamoId); if(m.tipo==='gasto'&&p) return abrir('prestamo',{p}); if(confirm('¿Eliminar esta devolución?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); return; }
-    if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
+    if(m.kind==='consumo') abrir('gasto',{inicial:{kind:'consumo',id:m.id,monto:m.raw.montoCuota*(m.raw.cuotas||1),moneda:m.raw.moneda,desc:m.desc,cat:m.cat,medio:m.medio,cuotas:m.cuotas,fecha:m.fecha,tercero:m.tercero}});
     else if(m.tipo==='gasto') abrir('gasto',{inicial:{kind:'mov',id:m.id,monto:m.monto,desc:m.desc,cat:m.cat,medio:m.cuenta,fecha:m.fecha}});
     else if(m.tipo==='ingreso') abrir('ingreso',{inicial:m});
     else if(confirm('¿Eliminar este movimiento?')) save({...db,movs:db.movs.filter(x=>x.id!==m.id)}); };
@@ -1271,7 +1323,7 @@ function Movimientos({db,save,abrir}){
         <div className="l"><div className="t">{m.desc}</div>
           <div className="s">{fL(m.fecha)} · {m.tipo==='aporte'?`${nombreMedio(db,m.cuenta)} → ${(db.cajas.find(c=>c.id===m.caja)||{}).nombre}`:m.tipo==='retiro'?`${(db.cajas.find(c=>c.id===m.caja)||{}).nombre} → ${nombreMedio(db,m.cuenta)}${m.motivo?` · ${m.motivo}`:''}`:m.tipo==='transfer'?`${nombreMedio(db,m.cuenta)} → ${nombreMedio(db,m.cuentaDestino)}`:nombreMedio(db,m.medio||m.cuenta)}{m.cuotas>1?` · ${m.cuotas} cuotas`:''}{m.cat?` · ${m.cat}`:''}</div>
           <div>{m.ahorro&&<span className="chip aho">ahorro</span>} {m.prestamoId&&<span className="chip">{m.tipo==='gasto'?'préstamo':'devolución'}</span>} {m.tercero&&<span className="chip">de terceros</span>} {m.auto&&<span className="chip">automático</span>}</div></div>
-        <span className={'amt '+(signo(m)>0?'pos':signo(m)<0?'':'muted')}>{signo(m)>0?'+':signo(m)<0?'−':''}{$(Math.abs(m.monto))}</span>
+        <span className={'amt '+(signo(m)>0?'pos':signo(m)<0?'':'muted')}>{signo(m)>0?'+':signo(m)<0?'−':''}{m.usd?$u(m.usd):$(Math.abs(m.monto))}</span>
       </div>)}
     </div>)}
   </div>;
@@ -1311,15 +1363,16 @@ function TarjetaCard({db,save,abrir,t}){
         <div className="row" style={{border:'none',padding:0,cursor:'pointer'}} onClick={()=>setAbierto(abierto===r.id?null:r.id)}>
           <div className="l"><div className="t">Vence {fL(r.vencimiento)} {r.pagado?<span className="chip" style={{background:'var(--pos-bg)',color:'var(--pos)'}}>pagado</span>:est?<span className="chip est">{r.estimado?'fechas estimadas':'sin confirmar'}</span>:<span className="chip">confirmado</span>}</div>
             <div className="s">Cierra {fC(r.cierre)} · {tot.items.length} ítems{tot.terceros?` · terceros ${$(tot.terceros)}`:''}</div></div>
-          <span className="amt">{$(tot.propio)}</span></div>
+          <span className="amt" style={{textAlign:'right'}}>{textoResumen(tot)}{tot.usd>0.004&&<div className="mini">≈ {$(tot.propio)}</div>}</span></div>
         {!r.pagado&&<div className="btns" style={{marginTop:6}}>
           {cerrado&&!r.confirmado&&<button className="btn sm" onClick={()=>abrir('confirmar',{t,r,tot,rsAll:rs})}>Confirmar resumen</button>}
-          {!cerrado&&<button className="btn sm ghost" onClick={()=>abrir('confirmar',{t,r,tot,rsAll:rs})}>Corregir fechas o total</button>}
+          {!cerrado&&!r.confirmado&&<button className="btn sm ghost" onClick={()=>abrir('confirmar',{t,r,tot,rsAll:rs})}>Corregir fechas o total</button>}
+          {r.confirmado&&<button className="btn sm ghost" onClick={()=>{ if(confirm(r.totalPDF!=null?'¿Deshacer la carga del PDF? Se quitan los consumos que agregó y el resumen vuelve a quedar sin confirmar.':'¿Deshacer la confirmación de este resumen?')) save(deshacerResumen(db,t,r.id)); }}>{r.totalPDF!=null?'Deshacer carga del PDF':'Deshacer confirmación'}</button>}
           {(tot.propio>0||tot.terceros>0)&&r.cierre<=addD(hoy,40)&&<button className="btn sm" onClick={()=>abrir('pagarResumen',{t,r,tot,rsAll:rs})}>Pagar</button>}</div>}
         {abierto===r.id&&<div style={{marginTop:6}}>{tot.items.map((x,i)=><div key={i} className="row" style={{padding:'6px 0'}}>
           <div className="l"><div style={{fontSize:13}}>{x.desc} {x.tercero&&<span className="chip">terceros</span>} {x.proyectado&&<span className="chip est">previsto</span>}</div><div className="s">{x.ajuste?'ajuste':x.arrastre?'arrastre':`compra ${fC(x.fechaCompra)}`}</div></div>
-          <span className="amt" style={{fontSize:13}}>{$(x.monto)}</span>
-          {x.consumoId&&<button className="btn sm ghost" aria-label="Editar" onClick={()=>{const c=db.consumos.find(y=>y.id===x.consumoId); abrir('gasto',{inicial:{kind:'consumo',id:c.id,monto:c.montoCuota*(c.cuotas||1),desc:c.desc,cat:c.cat,medio:c.tarjeta,cuotas:c.cuotas,fecha:c.fecha,tercero:c.tercero}});}}>✏️</button>}
+          <span className="amt" style={{fontSize:13}}>{x.usd?$u(x.usd):$(x.monto)}</span>
+          {x.consumoId&&<button className="btn sm ghost" aria-label="Editar" onClick={()=>{const c=db.consumos.find(y=>y.id===x.consumoId); abrir('gasto',{inicial:{kind:'consumo',id:c.id,monto:c.montoCuota*(c.cuotas||1),moneda:c.moneda,desc:c.desc,cat:c.cat,medio:c.tarjeta,cuotas:c.cuotas,fecha:c.fecha,tercero:c.tercero}});}}>✏️</button>}
         </div>)}{!tot.items.length&&<div className="empty">Sin consumos todavía.</div>}</div>}
       </div>; })}
   </div>;
@@ -1400,13 +1453,20 @@ function Recurrentes({db,save,abrir}){
 }
 
 // ================= CONFIG =================
-function Config({db,save,abrir,setDb,nubeProps}){
+function Config({db,save,abrir,setDb,nubeProps,actualizarDolar}){
+  const [dolMan,setDolMan]=useState('');
   const fileRef=useRef();
   const [fer,setFer]=useState('');
   const [cat,setCat]=useState('');
   const exportar=(data,nombre)=>{ const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=nombre; document.body.appendChild(a); a.click(); a.remove(); };
   return <div>
     <div className="card"><h2>Apariencia</h2><div className="seg">{[['claro','☀︎ Claro'],['oscuro','☾ Oscuro']].map(([k,l])=><button key={k} className={(db.tema||'claro')===k?'on':''} onClick={()=>save({...db,tema:k})}>{l}</button>)}</div></div>
+    <div className="card"><h2>Dólar oficial BNA <span className="muted">venta</span></h2>
+      <div className="row"><span className="l">{db.dolar?.venta?`${$(db.dolar.venta)}`:'Sin cotización'}</span><span className="muted">{db.dolar?.fecha?`${db.dolar.auto?db.dolar.fuente:'cargado a mano'} · ${fL(db.dolar.fecha)}`:''}</span></div>
+      <div style={{display:'flex',gap:8,marginTop:8}}><button className="btn" onClick={actualizarDolar}>Actualizar ahora</button>
+        <input inputMode="decimal" value={dolMan} onChange={e=>setDolMan(e.target.value)} placeholder="Cargar a mano" style={{flex:1,padding:'8px 10px',border:'1px solid var(--line)',borderRadius:8,background:'var(--surface)'}} />
+        <button className="btn" onClick={()=>{const n=num(dolMan); if(n>0){save({...db,dolar:{venta:n,fecha:hoyStr(),auto:false,fuente:'manual'}}); setDolMan('');}}}>Guardar</button></div>
+      <div className="mini" style={{marginTop:6}}>Se actualiza sola una vez por día. Se usa para pasar a pesos los consumos y saldos en dólares de las tarjetas.</div></div>
     <SeccionNube {...nubeProps} />
     <SeccionInstalar />
     <div className="card"><h2>Saldos</h2><div className="muted" style={{marginBottom:8}}>Si la app no coincide con tus cuentas, ajustalo acá.</div><button className="btn" onClick={()=>abrir('ajuste')}>Ajustar saldos reales</button></div>
@@ -1496,7 +1556,12 @@ function migrarCajas(d){
   const cuentas=d.cuentas.some(c=>c.id==='ef')?d.cuentas:[...d.cuentas,{id:'ef',nombre:'Efectivo',color:'var(--ef)',saldoInicial:6000}];
   return {...d,movs,cuentas,cajas:CAJAS_INIT};
 }
-function migrar(d){ if(!d) return d; d=migrarCajas(d); const catsOtras=(d.catsOtras||CATS_OTRAS).includes('Suscripciones')?(d.catsOtras||CATS_OTRAS):[...(d.catsOtras||CATS_OTRAS).slice(0,4),'Suscripciones',...(d.catsOtras||CATS_OTRAS).slice(4)]; return {...d, prestamos:d.prestamos||[], catsOtras, tema:d.tema||'claro'}; }
+function migrarDolares(d){
+  if(d.migUSD) return d;
+  const consumos=d.consumos.map(c=>{ const m=(c.desc||'').match(/\s*\(U\$S\s*([\d.,]+)\s*\(≈[^)]*\)\)\s*$/); if(!m||c.moneda) return c; return {...c,desc:c.desc.slice(0,m.index).trim(),moneda:'USD',montoCuota:nAR(m[1])}; });
+  return {...d,consumos,migUSD:true};
+}
+function migrar(d){ if(!d) return d; d=migrarCajas(d); d=migrarDolares(d); const catsOtras=(d.catsOtras||CATS_OTRAS).includes('Suscripciones')?(d.catsOtras||CATS_OTRAS):[...(d.catsOtras||CATS_OTRAS).slice(0,4),'Suscripciones',...(d.catsOtras||CATS_OTRAS).slice(4)]; return {...d, prestamos:d.prestamos||[], catsOtras, tema:d.tema||'claro'}; }
 function cargar(){ try{ const d=JSON.parse(localStorage.getItem(STORAGE_KEY)); if(d&&d.version===13) return migrar(d); }catch(e){} return null; }
 try{ const d0=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); document.documentElement.setAttribute('data-theme',d0.tema==='oscuro'?'dark':'light'); }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 function App(){
@@ -1541,6 +1606,9 @@ function App(){
   useEffect(()=>{ if(nubeRef.current.url) bajar(); const v=()=>{ if(document.visibilityState==='visible'&&nubeRef.current.url) bajar(); }; const on=()=>{ if(nubeRef.current.url) bajar(); }; document.addEventListener('visibilitychange',v); window.addEventListener('online',on); return ()=>{document.removeEventListener('visibilitychange',v);window.removeEventListener('online',on);}; },[]);
   useEffect(()=>{ const t=setInterval(()=>setDbRaw(d=>autoRegistrar(d)),60*60*1000); const v=()=>{ if(document.visibilityState==='visible') setDbRaw(d=>autoRegistrar(d)); }; document.addEventListener('visibilitychange',v); return ()=>{clearInterval(t);document.removeEventListener('visibilitychange',v);}; },[]);
   useEffect(()=>{ window.scrollTo(0,0); },[tab]);
+  const actualizarDolar=async(forzar=true)=>{ const d0=dbRef.current; if(!forzar&&d0.dolar&&d0.dolar.fecha===hoyStr()&&d0.dolar.auto) return; if(!forzar&&d0.dolar&&d0.dolar.auto===false&&d0.dolar.fecha===hoyStr()) return;
+    const r=await traerDolarBNA(); if(r) setDbRaw(d=>({...d,dolar:r})); else if(forzar) alert('No se pudo traer la cotización. Probá más tarde o cargala a mano.'); };
+  useEffect(()=>{ actualizarDolar(false); const v=()=>{ if(document.visibilityState==='visible') actualizarDolar(false); }; document.addEventListener('visibilitychange',v); return ()=>document.removeEventListener('visibilitychange',v); },[]);
   useEffect(()=>{ const osc=db.tema==='oscuro'; document.documentElement.setAttribute('data-theme',osc?'dark':'light'); const m=document.querySelector('meta[name="theme-color"]'); if(m) m.setAttribute('content',osc?'#0F1724':'#16233A'); },[db.tema]);
   const abrir=(tipo,props={})=>setModal({tipo,props});
   const cerrar=()=>setModal(null);
@@ -1556,7 +1624,7 @@ function App(){
     {tab==='tarjetas'&&<Tarjetas db={db} save={save} abrir={abrir} />}
     {tab==='cash'&&<Cashflow db={db} />}
     {tab==='rec'&&<Recurrentes db={db} save={save} abrir={abrir} />}
-    {tab==='config'&&<Config db={db} save={save} abrir={abrir} setDb={d=>setDbRaw(autoRegistrar(d))} nubeProps={{nube,sync,conectar,desconectar,subir,bajar}} />}
+    {tab==='config'&&<Config db={db} save={save} abrir={abrir} setDb={d=>setDbRaw(autoRegistrar(d))} nubeProps={{nube,sync,conectar,desconectar,subir,bajar}} actualizarDolar={()=>actualizarDolar(true)} />}
     {modal?.tipo==='gasto'&&<FormGasto {...mp} />}
     {modal?.tipo==='ingreso'&&<FormIngreso {...mp} />}
     {modal?.tipo==='transfer'&&<FormTransfer {...mp} />}
